@@ -104,15 +104,29 @@ public final class LocalInterventionServer {
             var buffer = [UInt8](repeating: 0, count: 4096)
             let bytesRead = read(clientSocket, &buffer, buffer.count)
             
+            guard bytesRead > 0, let requestStr = String(bytes: buffer.prefix(bytesRead), encoding: .utf8) else {
+                close(clientSocket)
+                return
+            }
+            
+            // Endpoint para cerrar la pestaña activa nativamente en el navegador
+            if requestStr.contains("/api/close-tab") || requestStr.contains("/close-tab") {
+                self.closeFrontmostBrowserTab()
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{\"status\":\"closed\"}"
+                _ = response.withCString { ptr in
+                    write(clientSocket, ptr, strlen(ptr))
+                }
+                close(clientSocket)
+                return
+            }
+            
             var requestedHost = "Sitio Distractor"
-            if bytesRead > 0, let requestStr = String(bytes: buffer.prefix(bytesRead), encoding: .utf8) {
-                if let firstLine = requestStr.components(separatedBy: "\r\n").first {
-                    if let range = firstLine.range(of: "site=") {
-                        let sub = String(firstLine[range.upperBound...])
-                        let siteName = sub.components(separatedBy: " ").first?.components(separatedBy: "&").first ?? ""
-                        if !siteName.isEmpty {
-                            requestedHost = self.htmlEscape(siteName.removingPercentEncoding ?? siteName)
-                        }
+            if let firstLine = requestStr.components(separatedBy: "\r\n").first {
+                if let range = firstLine.range(of: "site=") {
+                    let sub = String(firstLine[range.upperBound...])
+                    let siteName = sub.components(separatedBy: " ").first?.components(separatedBy: "&").first ?? ""
+                    if !siteName.isEmpty {
+                        requestedHost = self.htmlEscape(siteName.removingPercentEncoding ?? siteName)
                     }
                 }
             }
@@ -126,6 +140,52 @@ public final class LocalInterventionServer {
             }
             
             close(clientSocket)
+        }
+    }
+    
+    /// Cierra de forma nativa la pestaña activa en cualquier navegador soportado
+    public func closeFrontmostBrowserTab() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let runningApps = NSWorkspace.shared.runningApplications
+            let runningBundleIds = Set(runningApps.compactMap { $0.bundleIdentifier })
+            
+            // Probar en orden según el navegador que esté abierto
+            if runningBundleIds.contains("com.apple.Safari") {
+                let safariScript = "tell application \"Safari\" to if (count of windows) > 0 then close current tab of front window"
+                self.executeAppleScript(safariScript)
+            }
+            if runningBundleIds.contains("com.google.Chrome") {
+                let chromeScript = "tell application \"Google Chrome\" to if (count of windows) > 0 then close active tab of front window"
+                self.executeAppleScript(chromeScript)
+            }
+            if runningBundleIds.contains("com.brave.Browser") {
+                let braveScript = "tell application \"Brave Browser\" to if (count of windows) > 0 then close active tab of front window"
+                self.executeAppleScript(braveScript)
+            }
+            if runningBundleIds.contains("com.microsoft.edgemac") {
+                let edgeScript = "tell application \"Microsoft Edge\" to if (count of windows) > 0 then close active tab of front window"
+                self.executeAppleScript(edgeScript)
+            }
+            if runningBundleIds.contains("company.thebrowser.Browser") {
+                let arcScript = "tell application \"Arc\" to if (count of windows) > 0 then close active tab of front window"
+                self.executeAppleScript(arcScript)
+            }
+            if runningBundleIds.contains("com.operasoftware.Opera") {
+                let operaScript = "tell application \"Opera\" to if (count of windows) > 0 then close active tab of front window"
+                self.executeAppleScript(operaScript)
+            }
+            if runningBundleIds.contains("com.vivaldi.Vivaldi") {
+                let vivaldiScript = "tell application \"Vivaldi\" to if (count of windows) > 0 then close active tab of front window"
+                self.executeAppleScript(vivaldiScript)
+            }
+        }
+    }
+    
+    private func executeAppleScript(_ source: String) {
+        if let appleScript = NSAppleScript(source: source) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
         }
     }
     
@@ -374,7 +434,7 @@ public final class LocalInterventionServer {
                     text-decoration: none;
                     font-weight: 700;
                     font-size: 14px;
-                    padding: 10px 24px;
+                    padding: 11px 26px;
                     border-radius: 12px;
                     border: none;
                     cursor: pointer;
@@ -415,7 +475,7 @@ public final class LocalInterventionServer {
                     <span class="breathing-title">Respira</span>
                 </div>
 
-                <button class="btn-close-tab" onclick="window.close(); history.back();">
+                <button class="btn-close-tab" onclick="closeThisTab();">
                     ✓ Cerrar Pestaña y Volver al Enfoque
                 </button>
 
@@ -425,6 +485,26 @@ public final class LocalInterventionServer {
             </div>
             
             <script>
+                function closeThisTab() {
+                    const btn = document.querySelector('.btn-close-tab');
+                    if (btn) {
+                        btn.innerText = "⏳ Cerrando pestaña...";
+                        btn.disabled = true;
+                        btn.style.opacity = '0.7';
+                    }
+                    
+                    // 1. Invocar el endpoint nativo de FocusPanic para cerrar la pestaña en el sistema
+                    fetch('/api/close-tab', { method: 'POST' })
+                        .catch(() => {})
+                        .finally(() => {
+                            window.close();
+                            // Fallback de seguridad: si el navegador impide window.close, ir a pantalla limpia
+                            setTimeout(() => {
+                                window.location.replace('about:blank');
+                            }, 150);
+                        });
+                }
+
                 // Frases motivacionales rotativas
                 const quotes = [
                     { q: "El autocontrol no es privación, es elegir lo que más quieres a largo plazo sobre lo que quieres ahora mismo.", a: "🧠 Tu Cerebro en Control" },
