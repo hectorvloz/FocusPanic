@@ -40,6 +40,9 @@ public struct AppSettings: Codable, Equatable {
     public var showMotivationalRedirect: Bool
     public var isAlwaysBlockAdultSites: Bool // Switch del Escudo Anti-Porn (+180 sitios)
     public var isForceSafeSearchEnabled: Bool // Forzar SafeSearch estricto en Google, Bing, DuckDuckGo
+    public var isAntiIncognitoEnabled: Bool // Cerrar automáticamente ventanas privadas en Safari, Chrome, Brave, Arc, Edge
+    public var isKeywordBlockerEnabled: Bool // Interceptar búsquedas con términos prohibidos
+    public var blockedKeywords: [String] // Palabras clave prohibidas en buscadores y redes sociales
     public var permanentBlockedWebsites: [String] // Sitios bloqueados 24/7 permanentemente
     public var permanentBlockedApps: [String] // Apps bloqueadas 24/7 permanentemente
     public var blockedWebsites: [BlockedWebsite]
@@ -49,6 +52,14 @@ public struct AppSettings: Codable, Equatable {
     public var lastEmergencyCodeExpiry: Date?
 
     public static let defaultReflectionPhrase = "Reconozco que este es un impulso de distracción y elijo respirar con calma antes de actuar."
+
+    public static let defaultBlockedKeywords: [String] = [
+        "porn", "porno", "xxx", "sex", "sexx", "hentai", "xvideos", "pornhub", "xhamster",
+        "redtube", "onlyfans", "erotic", "erotico", "erotica", "nudity", "nude", "nudes",
+        "desnuda", "desnudas", "camgirl", "chaturbate", "escort", "stripper", "fetish",
+        "milf", "rule34", "nsfw", "brazzers", "youporn", "xnxx",
+        "casino", "ruleta online", "bet365", "apuestas", "tragaperras", "slots online", "stake casino"
+    ]
 
     public static let defaultWebsites: [BlockedWebsite] = [
         // Redes Sociales
@@ -178,6 +189,9 @@ public struct AppSettings: Codable, Equatable {
         showMotivationalRedirect: Bool = true,
         isAlwaysBlockAdultSites: Bool = true,
         isForceSafeSearchEnabled: Bool = true,
+        isAntiIncognitoEnabled: Bool = true,
+        isKeywordBlockerEnabled: Bool = true,
+        blockedKeywords: [String] = defaultBlockedKeywords,
         blockingMode: FocusBlockingMode = .selective,
         permanentBlockedWebsites: [String] = [],
         permanentBlockedApps: [String] = [],
@@ -209,6 +223,9 @@ public struct AppSettings: Codable, Equatable {
         self.showMotivationalRedirect = showMotivationalRedirect
         self.isAlwaysBlockAdultSites = isAlwaysBlockAdultSites
         self.isForceSafeSearchEnabled = isForceSafeSearchEnabled
+        self.isAntiIncognitoEnabled = isAntiIncognitoEnabled
+        self.isKeywordBlockerEnabled = isKeywordBlockerEnabled
+        self.blockedKeywords = blockedKeywords
         self.blockingMode = blockingMode
         self.permanentBlockedWebsites = permanentBlockedWebsites
         self.permanentBlockedApps = permanentBlockedApps

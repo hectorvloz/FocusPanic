@@ -313,6 +313,7 @@ public struct PermanentShieldView: View {
     @State private var singleName = ""
     @State private var singleDomain = ""
     @State private var batchText = ""
+    @State private var newKeyword = ""
     
     public var body: some View {
         Group {
@@ -512,7 +513,7 @@ public struct PermanentShieldView: View {
                         ZStack {
                             Circle()
                                 .fill(Color.purple.opacity(0.15))
-                                .frame(width: 44, height: 44)
+                            .frame(width: 44, height: 44)
                             Image(systemName: "magnifyingglass.shield")
                                 .font(.system(size: 20))
                                 .foregroundColor(.purple)
@@ -533,6 +534,128 @@ public struct PermanentShieldView: View {
                             set: { engine.updateForceSafeSearch(enabled: $0) }
                         ))
                         .toggleStyle(.switch)
+                    }
+                    
+                    Divider()
+                    
+                    // Escudo Anti-Modo Incógnito
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(Color(hex: "#0EA5E9").opacity(0.15))
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "eyeglasses")
+                                .font(.system(size: 20))
+                                .foregroundColor(Color(hex: "#0EA5E9"))
+                        }
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Escudo Anti-Modo Incógnito / Privado")
+                                .font(.headline)
+                            Text("Cierra automáticamente ventanas privadas en Safari, Google Chrome, Brave, Arc y Edge para evitar puntos ciegos de navegación.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Toggle("", isOn: Binding(
+                            get: { engine.settings.isAntiIncognitoEnabled },
+                            set: { engine.updateAntiIncognito(enabled: $0) }
+                        ))
+                        .toggleStyle(.switch)
+                    }
+                    
+                    Divider()
+                    
+                    // Filtro de Palabras Clave Prohibidas en Buscadores
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color(hex: "#F59E0B").opacity(0.15))
+                                    .frame(width: 44, height: 44)
+                                Image(systemName: "text.magnifyingglass")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(Color(hex: "#F59E0B"))
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Filtro de Palabras Prohibidas en Buscadores")
+                                    .font(.headline)
+                                Text("Intercepta búsquedas en Google, YouTube, Bing, DuckDuckGo, Twitter/X y Reddit con términos explícitos o distractores.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Toggle("", isOn: Binding(
+                                get: { engine.settings.isKeywordBlockerEnabled },
+                                set: { engine.updateKeywordBlocker(enabled: $0) }
+                            ))
+                            .toggleStyle(.switch)
+                        }
+                        
+                        if engine.settings.isKeywordBlockerEnabled {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    TextField("Añadir palabra o término prohibido (ej. apuestas)", text: $newKeyword)
+                                        .textFieldStyle(.roundedBorder)
+                                        .onSubmit {
+                                            if !newKeyword.isEmpty {
+                                                engine.addBlockedKeyword(newKeyword)
+                                                newKeyword = ""
+                                            }
+                                        }
+                                    
+                                    Button("Añadir") {
+                                        if !newKeyword.isEmpty {
+                                            engine.addBlockedKeyword(newKeyword)
+                                            newKeyword = ""
+                                        }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(Color(hex: "#F59E0B"))
+                                    .disabled(newKeyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                    
+                                    Button("Restaurar Lista") {
+                                        engine.resetDefaultKeywords()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .font(.caption)
+                                }
+                                
+                                // Chips de Palabras Clave
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 6) {
+                                        ForEach(engine.settings.blockedKeywords, id: \.self) { kw in
+                                            HStack(spacing: 4) {
+                                                Text(kw)
+                                                    .font(.caption2)
+                                                    .fontWeight(.bold)
+                                                
+                                                Button(action: {
+                                                    engine.removeBlockedKeyword(kw)
+                                                }) {
+                                                    Image(systemName: "xmark")
+                                                        .font(.system(size: 8, weight: .bold))
+                                                }
+                                                .buttonStyle(.plain)
+                                                .foregroundColor(.secondary)
+                                            }
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(Color(hex: "#F59E0B").opacity(0.15))
+                                            .foregroundColor(Color(hex: "#D97706"))
+                                            .cornerRadius(6)
+                                        }
+                                    }
+                                    .padding(.vertical, 2)
+                                }
+                            }
+                            .padding(.top, 6)
+                        }
                     }
                 }
                 .padding(16)

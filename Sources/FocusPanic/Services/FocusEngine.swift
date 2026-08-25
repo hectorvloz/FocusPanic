@@ -475,7 +475,10 @@ public final class FocusEngine: ObservableObject {
             BrowserWatchdogService.shared.start(
                 blockedDomains: permanentDomains,
                 allowedDomains: allowedDomains,
-                isWhitelistMode: false
+                blockedKeywords: settings.blockedKeywords,
+                isWhitelistMode: false,
+                isAntiIncognitoEnabled: settings.isAntiIncognitoEnabled,
+                isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled
             )
             
             // Monitorear apps permanentes
@@ -489,6 +492,56 @@ public final class FocusEngine: ObservableObject {
         } catch {
             generalErrorMessage = "Permisos requeridos para activar el Escudo Permanente."
         }
+    }
+    
+    // MARK: - Métodos de Control Anti-Incógnito y Palabras Prohibidas
+    
+    public func updateAntiIncognito(enabled: Bool) {
+        settings.isAntiIncognitoEnabled = enabled
+        saveSettings()
+        refreshWatchdogRules()
+    }
+    
+    public func updateKeywordBlocker(enabled: Bool) {
+        settings.isKeywordBlockerEnabled = enabled
+        saveSettings()
+        refreshWatchdogRules()
+    }
+    
+    public func addBlockedKeyword(_ keyword: String) {
+        let clean = keyword.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty && !settings.blockedKeywords.contains(clean) else { return }
+        settings.blockedKeywords.append(clean)
+        saveSettings()
+        refreshWatchdogRules()
+    }
+    
+    public func removeBlockedKeyword(_ keyword: String) {
+        settings.blockedKeywords.removeAll { $0.lowercased() == keyword.lowercased() }
+        saveSettings()
+        refreshWatchdogRules()
+    }
+    
+    public func resetDefaultKeywords() {
+        settings.blockedKeywords = AppSettings.defaultBlockedKeywords
+        saveSettings()
+        refreshWatchdogRules()
+    }
+    
+    private func refreshWatchdogRules() {
+        let allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        let blocked = sessionStatus == .active
+            ? settings.blockedWebsites.filter { $0.isEnabled }.map { $0.domain }
+            : settings.permanentBlockedWebsites
+        
+        BrowserWatchdogService.shared.updateRules(
+            blockedDomains: blocked,
+            allowedDomains: allowedDomains,
+            blockedKeywords: settings.blockedKeywords,
+            isWhitelistMode: (sessionStatus == .active && currentSession?.presetName == "Bloqueo Total"),
+            isAntiIncognitoEnabled: settings.isAntiIncognitoEnabled,
+            isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled
+        )
     }
     
     private func saveCurrentSession() {
@@ -549,20 +602,23 @@ public final class FocusEngine: ObservableObject {
     }
     
     public func applySystemBlocks() {
-        let isTotalBlock = (currentSession?.presetName == "Bloqueo Total") || settings.blockingMode == .whitelistOnly
-        let allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
-        let allowedBundleIds = Set(settings.allowedApps.filter { $0.isEnabled }.map { $0.bundleIdentifier })
+        let isTotalBlock = (currentSession?.presetName == "Bloqueo Total" || settings.blockingMode == .whitelistOnly)
         
-        var domainsToBlock = settings.blockedWebsites.filter { $0.isEnabled }.map { $0.domain }
-        domainsToBlock.append(contentsOf: settings.permanentBlockedWebsites)
+        let allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        let allowedBundleIds = settings.allowedApps.filter { $0.isEnabled }.map { $0.bundleIdentifier }
+        
+        var domainsToBlock: [String] = []
+        if isTotalBlock {
+            domainsToBlock = []
+        } else {
+            domainsToBlock = settings.blockedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        }
         
         if settings.isAlwaysBlockAdultSites {
             domainsToBlock.append(contentsOf: AdultBlockListProvider.adultDomains)
             domainsToBlock.append(contentsOf: AdultBlockListProvider.adultInstanceKeywords)
         }
         
-        // Identificar dominios raíz que tienen excepciones en Lista Blanca (ej. facebook.com/ads o business.facebook.com)
-        // No los bloqueamos en /etc/hosts a nivel DNS para que el Watchdog pueda permitir la ruta/subdominio exacto.
         var rootsWithWhitelistExceptions: Set<String> = []
         for allowed in allowedDomains {
             let hostOnly = allowed.components(separatedBy: "/").first ?? allowed
@@ -574,7 +630,6 @@ public final class FocusEngine: ObservableObject {
             }
         }
         
-        // Excluir de /etc/hosts los dominios con excepciones
         domainsToBlock.removeAll { domain in
             let clean = domain.lowercased().replacingOccurrences(of: "www.", with: "")
             return rootsWithWhitelistExceptions.contains(clean)
@@ -587,16 +642,17 @@ public final class FocusEngine: ObservableObject {
             generalErrorMessage = "⚠️ Permisos necesarios: \(error.localizedDescription)"
         }
         
-        // Proteger apps permitidas
         let activeBlockedApps = settings.blockedApps.filter { $0.isEnabled && !allowedBundleIds.contains($0.bundleIdentifier) }
         AppBlockerService.shared.startMonitoring(blockedApps: activeBlockedApps)
         
-        // El Watchdog se encarga de interceptar URLs completas con rutas y subdominios
         let allActiveBlocked = settings.blockedWebsites.filter { $0.isEnabled }.map { $0.domain }
         BrowserWatchdogService.shared.start(
             blockedDomains: allActiveBlocked,
             allowedDomains: allowedDomains,
-            isWhitelistMode: isTotalBlock
+            blockedKeywords: settings.blockedKeywords,
+            isWhitelistMode: isTotalBlock,
+            isAntiIncognitoEnabled: settings.isAntiIncognitoEnabled,
+            isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled
         )
     }
     
