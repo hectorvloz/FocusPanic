@@ -100,13 +100,7 @@ public struct AppBlockListView: View {
             
             let allActive = configuredFilteredApps.allSatisfy { $0.isEnabled }
             Button(allActive ? "Desactivar Todas" : "Activar Todas") {
-                let target = !allActive
-                for app in configuredFilteredApps {
-                    if let idx = engine.settings.blockedApps.firstIndex(where: { $0.id == app.id }) {
-                        engine.settings.blockedApps[idx].isEnabled = target
-                    }
-                }
-                engine.saveSettings()
+                engine.toggleAllBlockedApps(enabled: !allActive)
             }
             .buttonStyle(.plain)
             .font(.caption)
@@ -145,22 +139,28 @@ public struct AppBlockListView: View {
             Spacer()
             
             if isConfigured {
-                Toggle("", isOn: Binding(
-                    get: { app.isEnabled },
-                    set: { newValue in
-                        if let idx = engine.settings.blockedApps.firstIndex(where: { $0.id == app.id }) {
-                            engine.settings.blockedApps[idx].isEnabled = newValue
-                            engine.saveSettings()
+                HStack(spacing: 8) {
+                    Toggle("", isOn: Binding(
+                        get: { app.isEnabled },
+                        set: { newValue in
+                            engine.toggleBlockedApp(id: app.id, isEnabled: newValue)
                         }
+                    ))
+                    .toggleStyle(.switch)
+                    
+                    Button(action: {
+                        engine.removeBlockedApp(id: app.id)
+                    }) {
+                        Image(systemName: "trash")
+                            .font(.caption)
+                            .foregroundColor(.red.opacity(0.7))
                     }
-                ))
-                .toggleStyle(.switch)
+                    .buttonStyle(.plain)
+                    .help("Eliminar de la lista")
+                }
             } else {
                 Button(action: {
-                    var newApp = app
-                    newApp.isEnabled = true
-                    engine.settings.blockedApps.append(newApp)
-                    engine.saveSettings()
+                    engine.addBlockedApp(app: app)
                 }) {
                     Label("Añadir", systemImage: "plus.circle.fill")
                 }

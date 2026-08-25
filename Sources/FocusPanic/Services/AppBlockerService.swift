@@ -7,57 +7,113 @@ public final class AppBlockerService {
     
     private var isMonitoring = false
     private var blockedBundleIds = Set<String>()
-    private var blockedAppNames = Set<String>()
+    private var blockedNames = Set<String>()
+    private var blockedKeywords = Set<String>()
+    
     private var timer: Timer?
     private var launchObserver: NSObjectProtocol?
+    private var activateObserver: NSObjectProtocol?
+    private var lastInterventionNotificationTimes: [String: Date] = [:]
     
     private init() {}
     
     /// Inicia la vigilancia activa de aplicaciones bloqueadas
     public func startMonitoring(blockedApps: [BlockedApp]) {
-        self.blockedBundleIds = Set(blockedApps.filter { $0.isEnabled }.map { $0.bundleIdentifier.lowercased() })
-        self.blockedAppNames = Set(blockedApps.filter { $0.isEnabled }.map { $0.appName.lowercased() })
+        var bundleIds = Set<String>()
+        var names = Set<String>()
+        var keywords = Set<String>()
         
-        guard !blockedBundleIds.isEmpty || !blockedAppNames.isEmpty else { return }
-        
-        self.isMonitoring = true
-        
-        // 1. Cerrar inmediatamente las que ya estén abiertas
-        terminateRunningBlockedApps()
-        
-        // 2. Escuchar cuando se abra una nueva app
-        if launchObserver == nil {
-            launchObserver = NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didLaunchApplicationNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                guard let self = self, self.isMonitoring else { return }
-                if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
-                    self.checkAndTerminate(app: app)
+        for app in blockedApps {
+            let bId = app.bundleIdentifier.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = app.appName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if !bId.isEmpty {
+                bundleIds.insert(bId)
+            }
+            if !name.isEmpty {
+                names.insert(name)
+                // Extraer palabra clave raíz (ej. "Telegram" -> "telegram", "Mail de Apple" -> "mail")
+                let rootWords = name.components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { $0.count >= 3 && $0 != "app" && $0 != "apple" && $0 != "mac" }
+                for word in rootWords {
+                    keywords.insert(word.lowercased())
                 }
             }
         }
         
-        // 3. Revisión periódica en caso de que alguna se quede en segundo plano
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.terminateRunningBlockedApps()
+        self.blockedBundleIds = bundleIds
+        self.blockedNames = names
+        self.blockedKeywords = keywords
+        
+        guard !blockedBundleIds.isEmpty || !blockedNames.isEmpty else {
+            stopMonitoring()
+            return
+        }
+        
+        self.isMonitoring = true
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // 1. Cerrar inmediatamente todas las que ya estén abiertas
+            self.terminateRunningBlockedApps()
+            
+            // 2. Escuchar cuando se abra o active una app
+            if self.launchObserver == nil {
+                self.launchObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                    forName: NSWorkspace.didLaunchApplicationNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] notification in
+                    guard let self = self, self.isMonitoring else { return }
+                    if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                        self.checkAndTerminate(app: app)
+                    }
+                }
+            }
+            
+            if self.activateObserver == nil {
+                self.activateObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                    forName: NSWorkspace.didActivateApplicationNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] notification in
+                    guard let self = self, self.isMonitoring else { return }
+                    if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                        self.checkAndTerminate(app: app)
+                    }
+                }
+            }
+            
+            // 3. Revisión periódica de alta velocidad (cada 0.4s)
+            self.timer?.invalidate()
+            self.timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+                self?.terminateRunningBlockedApps()
+            }
         }
     }
     
     /// Detiene la vigilancia de aplicaciones
     public func stopMonitoring() {
         self.isMonitoring = false
-        timer?.invalidate()
-        timer = nil
+        self.timer?.invalidate()
+        self.timer = nil
+        
         if let observer = launchObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
-            launchObserver = nil
+            self.launchObserver = nil
         }
+        if let observer = activateObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            self.activateObserver = nil
+        }
+        
+        self.blockedBundleIds.removeAll()
+        self.blockedNames.removeAll()
+        self.blockedKeywords.removeAll()
     }
     
-    private func terminateRunningBlockedApps() {
+    public func terminateRunningBlockedApps() {
         guard isMonitoring else { return }
         let running = NSWorkspace.shared.runningApplications
         for app in running {
@@ -69,23 +125,72 @@ public final class AppBlockerService {
         guard isMonitoring else { return }
         
         let bundleId = app.bundleIdentifier?.lowercased() ?? ""
-        let name = app.localizedName?.lowercased() ?? ""
+        let localizedName = app.localizedName?.lowercased() ?? ""
+        let bundleName = app.bundleURL?.lastPathComponent.lowercased().replacingOccurrences(of: ".app", with: "") ?? ""
+        let execName = app.executableURL?.lastPathComponent.lowercased() ?? ""
         
-        let shouldBlock = blockedBundleIds.contains(bundleId) ||
-                          blockedAppNames.contains(name) ||
-                          blockedAppNames.contains(where: { !name.isEmpty && name.contains($0) })
+        // No bloquear la propia FocusPanic ni Finder
+        if bundleId == "com.focuspanic.mac" || bundleId == "com.apple.finder" || bundleId == "com.apple.systemevents" {
+            return
+        }
         
-        if shouldBlock {
-            // Intentar terminar suavemente o forzar
-            app.terminate()
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if !app.isTerminated {
-                    app.forceTerminate()
+        var isBlocked = false
+        
+        // 1. Coincidencia por Bundle ID exacto
+        if !bundleId.isEmpty && blockedBundleIds.contains(bundleId) {
+            isBlocked = true
+        }
+        
+        // 2. Coincidencia por Bundle ID parcial
+        if !isBlocked && !bundleId.isEmpty {
+            for bId in blockedBundleIds {
+                if bundleId.contains(bId) || bId.contains(bundleId) {
+                    isBlocked = true
+                    break
                 }
             }
+        }
+        
+        // 3. Coincidencia por Nombre de App o Nombre de Bundle
+        if !isBlocked {
+            for name in blockedNames {
+                if (!localizedName.isEmpty && localizedName == name) ||
+                   (!bundleName.isEmpty && bundleName == name) ||
+                   (!execName.isEmpty && execName == name) ||
+                   (!localizedName.isEmpty && localizedName.contains(name)) ||
+                   (!bundleName.isEmpty && bundleName.contains(name)) {
+                    isBlocked = true
+                    break
+                }
+            }
+        }
+        
+        // 4. Coincidencia por Palabras Clave de la App (ej. discord, telegram, whatsapp, slack, steam, spotify)
+        if !isBlocked {
+            for kw in blockedKeywords {
+                if (!localizedName.isEmpty && localizedName.contains(kw)) ||
+                   (!bundleName.isEmpty && bundleName.contains(kw)) ||
+                   (!bundleId.isEmpty && bundleId.contains(kw)) ||
+                   (!execName.isEmpty && execName.contains(kw)) {
+                    isBlocked = true
+                    break
+                }
+            }
+        }
+        
+        if isBlocked {
+            // Terminar instantáneamente
+            app.forceTerminate()
             
-            sendInterventionNotification(appName: app.localizedName ?? "Aplicación")
+            let displayName = app.localizedName ?? bundleName.capitalized
+            let appKey = displayName.lowercased()
+            
+            let now = Date()
+            let lastTime = lastInterventionNotificationTimes[appKey] ?? Date.distantPast
+            if now.timeIntervalSince(lastTime) > 3.0 {
+                lastInterventionNotificationTimes[appKey] = now
+                sendInterventionNotification(appName: displayName)
+            }
         }
     }
     
@@ -96,13 +201,13 @@ public final class AppBlockerService {
             detail: "Aplicación cerrada"
         )
         
-        let content = UNMutableNotificationContent()
-        content.title = "🧘 FocusPanic: Modo Enfoque Activo"
-        content.body = "Se ha pausado '\(appName)' para proteger tu atención. ¡Tú puedes lograr tu objetivo!"
-        content.sound = .default
+        SoundService.shared.play("Basso")
         
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        NotificationService.shared.sendNotification(
+            title: "🛑 Aplicación Bloqueada",
+            body: "FocusPanic cerró '\(appName)' para proteger tu atención y enfoque.",
+            sound: "Basso"
+        )
     }
     
     /// Obtiene las aplicaciones instaladas en /Applications y /System/Applications para sugerir en configuración
@@ -124,7 +229,7 @@ public final class AppBlockerService {
                                   (bundle.infoDictionary?["CFBundleName"] as? String) ??
                                   item.replacingOccurrences(of: ".app", with: "")
                     
-                    if !seenBundleIds.contains(bundleId) {
+                    if !seenBundleIds.contains(bundleId) && bundleId != "com.focuspanic.mac" {
                         seenBundleIds.insert(bundleId)
                         results.append(BlockedApp(
                             bundleIdentifier: bundleId,

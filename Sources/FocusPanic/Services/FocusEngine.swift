@@ -278,6 +278,44 @@ public final class FocusEngine: ObservableObject {
         }
     }
     
+    public func addBlockedApp(app: BlockedApp) {
+        if let idx = settings.blockedApps.firstIndex(where: { $0.bundleIdentifier == app.bundleIdentifier }) {
+            settings.blockedApps[idx].isEnabled = true
+        } else {
+            var newApp = app
+            newApp.isEnabled = true
+            settings.blockedApps.append(newApp)
+        }
+        saveSettings()
+        if currentSession != nil {
+            applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
+        }
+    }
+    
+    public func toggleBlockedApp(id: UUID, isEnabled: Bool) {
+        if let idx = settings.blockedApps.firstIndex(where: { $0.id == id }) {
+            settings.blockedApps[idx].isEnabled = isEnabled
+            saveSettings()
+            if currentSession != nil {
+                applySystemBlocks()
+            } else {
+                applyPermanentProtectionOnly()
+            }
+        }
+    }
+    
+    public func removeBlockedApp(id: UUID) {
+        settings.blockedApps.removeAll { $0.id == id }
+        saveSettings()
+        if currentSession != nil {
+            applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
+        }
+    }
+    
     public func addAllowedApp(app: BlockedApp) {
         if let idx = settings.allowedApps.firstIndex(where: { $0.bundleIdentifier == app.bundleIdentifier }) {
             settings.allowedApps[idx].isEnabled = true
@@ -485,7 +523,16 @@ public final class FocusEngine: ObservableObject {
             )
             
             // Monitorear apps permanentes
-            let permApps = settings.blockedApps.filter { settings.permanentBlockedApps.contains($0.bundleIdentifier) }
+            var permApps: [BlockedApp] = []
+            for bId in settings.permanentBlockedApps {
+                if let found = settings.blockedApps.first(where: { $0.bundleIdentifier == bId }) {
+                    var activeApp = found
+                    activeApp.isEnabled = true
+                    permApps.append(activeApp)
+                } else {
+                    permApps.append(BlockedApp(bundleIdentifier: bId, appName: bId, isEnabled: true))
+                }
+            }
             if !permApps.isEmpty {
                 AppBlockerService.shared.startMonitoring(blockedApps: permApps)
             } else {
