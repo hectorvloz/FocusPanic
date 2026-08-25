@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct MenuBarPopoverView: View {
     @ObservedObject var engine = FocusEngine.shared
+    @ObservedObject var statsManager = FocusStatsManager.shared
     @State private var timerRotation: Double = 0
     
     public var body: some View {
@@ -19,6 +20,20 @@ public struct MenuBarPopoverView: View {
                 
                 Text(engine.sessionStatus == .active ? "Sesión Activa" : "FocusPanic")
                     .font(.system(size: 14, weight: .heavy))
+                
+                // Badge de Racha
+                HStack(spacing: 3) {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(Color(hex: "#F97316"))
+                    Text("\(statsManager.stats.currentStreakDays)d")
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundColor(Color(hex: "#F97316"))
+                }
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color(hex: "#F97316").opacity(0.15))
+                .cornerRadius(4)
                 
                 if engine.sessionStatus == .active {
                     Text(engine.settings.blockingMode == .whitelistOnly ? "TOTAL" : "SELECTIVO")

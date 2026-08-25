@@ -90,6 +90,12 @@ public final class AppBlockerService {
     }
     
     private func sendInterventionNotification(appName: String) {
+        FocusStatsManager.shared.recordInterception(
+            source: appName,
+            category: "app",
+            detail: "Aplicación cerrada"
+        )
+        
         let content = UNMutableNotificationContent()
         content.title = "🧘 FocusPanic: Modo Enfoque Activo"
         content.body = "Se ha pausado '\(appName)' para proteger tu atención. ¡Tú puedes lograr tu objetivo!"

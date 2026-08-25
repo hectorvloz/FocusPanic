@@ -677,6 +677,17 @@ public final class FocusEngine: ObservableObject {
         sessionTimer?.cancel()
         sessionTimer = nil
         
+        // Registrar tiempo de enfoque para racha y estadísticas
+        if let session = currentSession {
+            let totalMins = Int(session.originalDurationSeconds / 60)
+            let elapsedMins = Int((session.originalDurationSeconds - session.remainingSeconds) / 60)
+            if didCompleteNormally {
+                FocusStatsManager.shared.recordCompletedSession(durationMinutes: totalMins)
+            } else if elapsedMins >= 3 {
+                FocusStatsManager.shared.recordCompletedSession(durationMinutes: elapsedMins)
+            }
+        }
+        
         AppBlockerService.shared.stopMonitoring()
         
         // Volver al estado de protección permanente (Anti-Porn + SafeSearch + Sitios 24/7)

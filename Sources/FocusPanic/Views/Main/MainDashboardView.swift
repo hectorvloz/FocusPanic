@@ -2,9 +2,11 @@ import SwiftUI
 
 public struct MainDashboardView: View {
     @ObservedObject var engine = FocusEngine.shared
+    @ObservedObject var statsManager = FocusStatsManager.shared
     @State private var selectedPreset: FocusPreset? = FocusPreset.defaultPresets[1] // Pomodoro por defecto
     @State private var customDurationMinutes: Int = 25
     @State private var isShowingSettings = false
+    @State private var isShowingStats = false
     
     public var body: some View {
         ZStack {
@@ -32,6 +34,9 @@ public struct MainDashboardView: View {
         .frame(minWidth: 740, minHeight: 580)
         .sheet(isPresented: $engine.isSettingsPresented) {
             SettingsContainerView()
+        }
+        .sheet(isPresented: $isShowingStats) {
+            StatsDashboardView()
         }
         .sheet(isPresented: $engine.isEmergencyModalPresented) {
             EmergencyUnlockModalView()
@@ -71,27 +76,47 @@ public struct MainDashboardView: View {
             
             Spacer()
             
-            HStack(spacing: 16) {
-                let enabledWebs = engine.settings.blockedWebsites.filter { $0.isEnabled }.count
-                let enabledApps = engine.settings.blockedApps.filter { $0.isEnabled }.count
+            HStack(spacing: 14) {
+                // Botón Interactivo de Racha y Dopamina Positiva
+                Button(action: { isShowingStats = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(Color(hex: "#F97316"))
+                        
+                        Text("\(statsManager.stats.currentStreakDays)d racha")
+                            .font(.caption)
+                            .fontWeight(.heavy)
+                            .foregroundColor(Color(hex: "#F97316"))
+                        
+                        Text("•")
+                            .font(.caption2)
+                            .foregroundColor(Color(hex: "#F97316").opacity(0.6))
+                        
+                        Image(systemName: "shield.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "#F43F5E"))
+                        
+                        Text("\(statsManager.todayInterceptionsCount) salvadas")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(Color(hex: "#F43F5E"))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(hex: "#F97316").opacity(0.12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color(hex: "#F97316").opacity(0.3), lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Ver Racha y Estadísticas de Dopamina")
+                
                 let allowedCount = engine.settings.allowedWebsites.filter { $0.isEnabled }.count
-                
-                HStack(spacing: 4) {
-                    Image(systemName: "globe")
-                        .foregroundColor(.secondary)
-                    Text("\(enabledWebs) webs")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                HStack(spacing: 4) {
-                    Image(systemName: "app.badge.checkmark")
-                        .foregroundColor(.secondary)
-                    Text("\(enabledApps) apps")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.shield.fill")
                         .foregroundColor(Color(hex: "#10B981"))
@@ -104,14 +129,6 @@ public struct MainDashboardView: View {
                 .padding(.vertical, 3)
                 .background(Color(hex: "#10B981").opacity(0.12))
                 .cornerRadius(6)
-                
-                HStack(spacing: 4) {
-                    Image(systemName: "hand.raised.slash.fill")
-                        .foregroundColor(Color(hex: "#E11D48"))
-                    Text("Anti-Porn")
-                        .font(.caption)
-                        .foregroundColor(engine.settings.isAlwaysBlockAdultSites ? Color(hex: "#E11D48") : .secondary)
-                }
                 
                 Button(action: { engine.isSettingsPresented = true }) {
                     Image(systemName: "gearshape.fill")

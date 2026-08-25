@@ -204,6 +204,12 @@ public final class BrowserWatchdogService {
     }
     
     private func notifyIncognitoBlocked() {
+        FocusStatsManager.shared.recordInterception(
+            source: "Modo Incógnito",
+            category: "incognito",
+            detail: "Ventana privada cerrada"
+        )
+        
         if Date().timeIntervalSince(lastIncognitoNotificationTime) > 3.0 {
             lastIncognitoNotificationTime = Date()
             NotificationService.shared.sendNotification(
@@ -438,6 +444,13 @@ public final class BrowserWatchdogService {
     }
     
     private func notifyInterception(domain: String, isWhitelist: Bool) {
+        let isKeyword = domain.lowercased().contains("búsqueda") || domain.lowercased().contains("término") || domain.lowercased().contains("termino")
+        FocusStatsManager.shared.recordInterception(
+            source: domain,
+            category: isKeyword ? "keyword" : "web",
+            detail: domain
+        )
+        
         if Date().timeIntervalSince(lastInterceptionTime) > 3.0 {
             lastInterceptionTime = Date()
             let title = isWhitelist ? "🛡️ Sitio No Permitido (Modo Total)" : "🛡️ Distracción / Búsqueda Interceptada"
