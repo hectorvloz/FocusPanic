@@ -89,27 +89,52 @@ public struct MenuBarPopoverView: View {
                         .fontWeight(.bold)
                         .foregroundColor(.accentColor)
                         .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-                        .background(Color.accentColor.opacity(0.1))
+                        .padding(.horizontal, 10)
+                        .background(Color.accentColor.opacity(0.12))
                         .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
                 
                 Spacer()
                 
-                Button("Salir") {
-                    if engine.sessionStatus == .active {
-                        openAppEmergencyUnlock()
-                    } else {
-                        NSApplication.shared.terminate(nil)
+                Menu {
+                    Button("Ocultar este menú") {
+                        closePopover()
                     }
+                    
+                    if engine.sessionStatus == .active {
+                        Divider()
+                        if engine.settings.isMasterPasswordEnabled {
+                            Button("Desbloquear con Clave...") {
+                                openAppEmergencyUnlock()
+                            }
+                        } else {
+                            Button("Detener Modo Enfoque") {
+                                engine.endSession(didCompleteNormally: false)
+                            }
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Button(role: .destructive, action: {
+                        quitApplication()
+                    }) {
+                        Text("Cerrar FocusPanic (Salir)")
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 12))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
                 }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.vertical, 4)
-                .padding(.horizontal, 6)
-                .contentShape(Rectangle())
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 12)
@@ -176,31 +201,56 @@ public struct MenuBarPopoverView: View {
                 }
             }
             
-            // Botón de Desbloqueo Rápido
-            Button(action: {
-                openAppEmergencyUnlock()
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "key.fill")
-                        .font(.caption)
-                    Text("Desbloquear con Clave")
-                        .font(.caption)
-                        .fontWeight(.bold)
+            // Botón de Desbloqueo / Detener según configuración
+            Group {
+                if engine.settings.isMasterPasswordEnabled {
+                    Button(action: {
+                        openAppEmergencyUnlock()
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "key.fill")
+                                .font(.caption)
+                            Text("Desbloquear con Clave")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.vertical, 7)
+                        .padding(.horizontal, 16)
+                        .background(
+                            LinearGradient(
+                                colors: [Color(red: 0.95, green: 0.25, blue: 0.35), Color(red: 0.85, green: 0.15, blue: 0.45)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(8)
+                        .shadow(color: Color.red.opacity(0.25), radius: 6, x: 0, y: 3)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button(action: {
+                        withAnimation {
+                            engine.endSession(didCompleteNormally: false)
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "stop.circle.fill")
+                                .font(.caption)
+                            Text("Detener Sesión")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.vertical, 7)
+                        .padding(.horizontal, 16)
+                        .background(Color(hex: "#F43F5E"))
+                        .cornerRadius(8)
+                        .shadow(color: Color.red.opacity(0.25), radius: 6, x: 0, y: 3)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .foregroundColor(.white)
-                .padding(.vertical, 7)
-                .padding(.horizontal, 16)
-                .background(
-                    LinearGradient(
-                        colors: [Color(red: 0.95, green: 0.25, blue: 0.35), Color(red: 0.85, green: 0.15, blue: 0.45)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .cornerRadius(8)
-                .shadow(color: Color.red.opacity(0.25), radius: 6, x: 0, y: 3)
             }
-            .buttonStyle(.plain)
             .padding(.bottom, 2)
         }
         .padding(.vertical, 6)
@@ -293,5 +343,35 @@ public struct MenuBarPopoverView: View {
         NSApp.activate(ignoringOtherApps: true)
         AppDelegate.shared?.openMainWindow()
         engine.initiateEmergencyUnlock()
+    }
+    
+    private func quitApplication() {
+        closePopover()
+        if engine.sessionStatus == .active {
+            if engine.settings.isMasterPasswordEnabled {
+                let alert = NSAlert()
+                alert.messageText = "Sesión de Enfoque Activa"
+                alert.informativeText = "Tienes una sesión de bloqueo en curso. Debes ingresar la clave del compañero para desbloquearla antes de salir."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Entendido")
+                alert.runModal()
+                openAppEmergencyUnlock()
+                return
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "¿Detener sesión y salir?"
+                alert.informativeText = "Al salir de FocusPanic se desactivará el temporizador y se desbloquearán las distracciones."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Detener y Salir")
+                alert.addButton(withTitle: "Seguir Enfocado")
+                let res = alert.runModal()
+                if res == .alertFirstButtonReturn {
+                    engine.endSession(didCompleteNormally: false)
+                    NSApplication.shared.terminate(nil)
+                }
+                return
+            }
+        }
+        NSApplication.shared.terminate(nil)
     }
 }
