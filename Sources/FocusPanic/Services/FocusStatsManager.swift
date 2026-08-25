@@ -51,6 +51,28 @@ public final class FocusStatsManager: ObservableObject {
         save()
     }
     
+    // MARK: - Registro de Uso Pasivo 24/7 de Redes Sociales (Visitas y Tiempo)
+    
+    public func recordSocialActivity(source: String, seconds: Int, isNewVisit: Bool) {
+        let cleanSource = cleanSourceName(source)
+        let today = todayString
+        
+        var record = stats.dailyRecords[today] ?? DailyFocusRecord(dateString: today)
+        var socialUsage = record.socialUsage
+        var itemUsage = socialUsage[cleanSource] ?? SocialUsageRecord()
+        
+        if isNewVisit {
+            itemUsage.visitsCount += 1
+        }
+        itemUsage.totalSeconds += seconds
+        
+        socialUsage[cleanSource] = itemUsage
+        record.socialUsage = socialUsage
+        stats.dailyRecords[today] = record
+        
+        save()
+    }
+    
     // MARK: - Registro de Impulsos / Distracciones Interceptadas
     
     public func recordInterception(source: String, category: String = "social", detail: String = "") {
@@ -73,7 +95,7 @@ public final class FocusStatsManager: ObservableObject {
         save()
     }
     
-    private func cleanSourceName(_ raw: String) -> String {
+    public func cleanSourceName(_ raw: String) -> String {
         let lower = raw.lowercased()
         if lower.contains("instagram") { return "Instagram" }
         if lower.contains("tiktok") { return "TikTok" }
@@ -85,6 +107,8 @@ public final class FocusStatsManager: ObservableObject {
         if lower.contains("twitch") { return "Twitch" }
         if lower.contains("discord") { return "Discord" }
         if lower.contains("telegram") { return "Telegram" }
+        if lower.contains("threads.net") { return "Threads" }
+        if lower.contains("pinterest") { return "Pinterest" }
         if lower.contains("incognito") || lower.contains("incógnito") { return "Modo Incógnito" }
         if lower.contains("búsqueda") || lower.contains("termino") || lower.contains("keyword") { return "Búsqueda Prohibida" }
         if lower.contains("porn") || lower.contains("xxx") { return "Sitio Adulto (+18)" }
@@ -154,6 +178,23 @@ public final class FocusStatsManager: ObservableObject {
     
     public var todaySessionsCount: Int {
         return stats.dailyRecords[todayString]?.sessionsCompletedCount ?? 0
+    }
+    
+    public var todaySocialUsageList: [(source: String, visits: Int, minutes: Int, seconds: Int)] {
+        let usageMap = stats.dailyRecords[todayString]?.socialUsage ?? [:]
+        return usageMap.map { (source: $0.key, visits: $0.value.visitsCount, minutes: $0.value.totalSeconds / 60, seconds: $0.value.totalSeconds) }
+            .sorted { $0.seconds > $1.seconds }
+    }
+    
+    public var totalSocialTimeTodayMinutes: Int {
+        let usageMap = stats.dailyRecords[todayString]?.socialUsage ?? [:]
+        let totalSecs = usageMap.values.reduce(0) { $0 + $1.totalSeconds }
+        return totalSecs / 60
+    }
+    
+    public var totalSocialVisitsToday: Int {
+        let usageMap = stats.dailyRecords[todayString]?.socialUsage ?? [:]
+        return usageMap.values.reduce(0) { $0 + $1.visitsCount }
     }
     
     public var topDistractionsToday: [(source: String, count: Int)] {

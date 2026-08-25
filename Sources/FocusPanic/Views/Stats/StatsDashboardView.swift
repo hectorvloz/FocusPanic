@@ -40,7 +40,7 @@ public struct StatsDashboardView: View {
                             .fontWeight(.heavy)
                             .foregroundColor(.white)
                         
-                        Text("Métricas de concentración y registro de impulsos salvados por FocusPanic")
+                        Text("Métricas de concentración, tiempo en redes sociales y registro de impulsos salvados")
                             .font(.caption)
                             .foregroundColor(Color(hex: "#94A3B8"))
                     }
@@ -59,16 +59,19 @@ public struct StatsDashboardView: View {
                         // 1. Banner Principal de Racha de Fuego
                         streakHeroCard
                         
-                        // 2. Grid de 4 Métricas Clave
+                        // 2. Grid de 4 Métricas Clave (Tiempo Ganado vs Tiempo en Redes)
                         metricsGrid
                         
-                        // 3. Gráfico Semanal de Productividad
+                        // 3. Monitor de Tiempo & Visitas en Redes Sociales 24/7
+                        socialScreenTimeCard
+                        
+                        // 4. Gráfico Semanal de Productividad
                         weeklyActivityCard
                         
-                        // 4. Desglose de Distracciones Evitadas (Top Distractores)
+                        // 5. Desglose de Distracciones Evitadas (Top Distractores)
                         topDistractionsCard
                         
-                        // 5. Historial de Impulsos Interceptados Recientes
+                        // 6. Historial de Impulsos Interceptados Recientes
                         recentActivityLogCard
                     }
                     .padding(.horizontal, 28)
@@ -93,7 +96,7 @@ public struct StatsDashboardView: View {
             .padding(.trailing, 26)
             .keyboardShortcut(.cancelAction)
         }
-        .frame(minWidth: 780, minHeight: 620)
+        .frame(minWidth: 780, minHeight: 640)
     }
     
     // MARK: - 1. Hero Card de Racha
@@ -215,23 +218,25 @@ public struct StatsDashboardView: View {
                 color: Color(hex: "#38BDF8"),
                 value: String(format: "%.1f h", totalHours),
                 title: "Tiempo Ganado",
-                subtitle: "\(statsManager.stats.totalFocusMinutesAllTime) min totales"
+                subtitle: "\(statsManager.todayFocusMinutes) min hoy"
+            )
+            
+            let socialMins = statsManager.totalSocialTimeTodayMinutes
+            let socialTimeFormatted = socialMins >= 60 ? "\(socialMins / 60)h \(socialMins % 60)m" : "\(socialMins) min"
+            metricCard(
+                icon: "hourglass.badge.eye",
+                color: Color(hex: "#A855F7"),
+                value: socialTimeFormatted,
+                title: "Tiempo en Redes Hoy",
+                subtitle: "\(statsManager.totalSocialVisitsToday) visitas 24/7"
             )
             
             metricCard(
                 icon: "shield.lefthalf.filled.badge.checkmark",
                 color: Color(hex: "#F43F5E"),
                 value: "\(statsManager.todayInterceptionsCount)",
-                title: "Impulsos Salvados Hoy",
+                title: "Impulsos Salvados",
                 subtitle: "\(statsManager.stats.totalInterceptionsAllTime) históricos"
-            )
-            
-            metricCard(
-                icon: "checkmark.circle.fill",
-                color: Color(hex: "#10B981"),
-                value: "\(statsManager.todaySessionsCount)",
-                title: "Sesiones Hoy",
-                subtitle: "\(statsManager.todayFocusMinutes) min acumulados"
             )
             
             metricCard(
@@ -259,7 +264,7 @@ public struct StatsDashboardView: View {
             }
             
             Text(value)
-                .font(.system(size: 24, weight: .heavy, design: .rounded))
+                .font(.system(size: 22, weight: .heavy, design: .rounded))
                 .foregroundColor(.white)
             
             VStack(alignment: .leading, spacing: 2) {
@@ -284,7 +289,151 @@ public struct StatsDashboardView: View {
         )
     }
     
-    // MARK: - 3. Gráfico Semanal de Productividad
+    // MARK: - 3. Monitor de Tiempo & Visitas en Redes Sociales 24/7
+    private var socialScreenTimeCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock.badge.exclamationmark")
+                        .foregroundColor(Color(hex: "#A855F7"))
+                    Text("Tiempo & Visitas en Redes Sociales (Monitoreo 24/7)")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                }
+                
+                Spacer()
+                
+                Text("Tiempo real invertido hoy")
+                    .font(.caption2)
+                    .foregroundColor(Color(hex: "#94A3B8"))
+            }
+            
+            let socialList = statsManager.todaySocialUsageList
+            if socialList.isEmpty {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 6) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.title2)
+                            .foregroundColor(Color(hex: "#10B981"))
+                        Text("No has entrado a redes sociales hoy. ¡Excelente control de dopamina!")
+                            .font(.caption)
+                            .foregroundColor(Color(hex: "#94A3B8"))
+                    }
+                    .padding(.vertical, 16)
+                    Spacer()
+                }
+            } else {
+                let maxSeconds = max(1, socialList.first?.seconds ?? 1)
+                VStack(spacing: 12) {
+                    ForEach(socialList, id: \.source) { item in
+                        HStack(spacing: 12) {
+                            HStack(spacing: 6) {
+                                Image(systemName: socialIcon(for: item.source))
+                                    .foregroundColor(socialColor(for: item.source))
+                                    .font(.system(size: 13))
+                                    .frame(width: 16)
+                                
+                                Text(item.source)
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.white)
+                            }
+                            .frame(width: 140, alignment: .leading)
+                            
+                            // Barra de Tiempo Invertido
+                            GeometryReader { geo in
+                                let w = CGFloat(item.seconds) / CGFloat(maxSeconds) * geo.size.width
+                                ZStack(alignment: .leading) {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.white.opacity(0.08))
+                                        .frame(height: 10)
+                                    
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(LinearGradient(
+                                            colors: [socialColor(for: item.source), Color(hex: "#A855F7")],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        ))
+                                        .frame(width: max(8, w), height: 10)
+                                }
+                            }
+                            .frame(height: 10)
+                            
+                            // Pastilla de Visitas
+                            HStack(spacing: 3) {
+                                Image(systemName: "eye.fill")
+                                    .font(.system(size: 8))
+                                Text("\(item.visits)x")
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.white.opacity(0.1))
+                            .foregroundColor(Color(hex: "#E2E8F0"))
+                            .cornerRadius(4)
+                            
+                            // Tiempo Formateado
+                            let formattedTime = formatSeconds(item.seconds)
+                            Text(formattedTime)
+                                .font(.caption2)
+                                .fontWeight(.heavy)
+                                .foregroundColor(socialColor(for: item.source))
+                                .frame(width: 65, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(hex: "#181B28").opacity(0.8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color(hex: "#A855F7").opacity(0.25), lineWidth: 1)
+                )
+        )
+    }
+    
+    private func socialIcon(for source: String) -> String {
+        let s = source.lowercased()
+        if s.contains("instagram") { return "camera.fill" }
+        if s.contains("youtube") { return "play.rectangle.fill" }
+        if s.contains("tiktok") { return "music.note" }
+        if s.contains("twitter") || s.contains("x") { return "bubble.right.fill" }
+        if s.contains("reddit") { return "bubble.left.and.bubble.right.fill" }
+        if s.contains("facebook") { return "person.2.fill" }
+        if s.contains("netflix") { return "tv.fill" }
+        if s.contains("twitch") { return "gamecontroller.fill" }
+        if s.contains("discord") { return "message.fill" }
+        return "globe"
+    }
+    
+    private func socialColor(for source: String) -> Color {
+        let s = source.lowercased()
+        if s.contains("instagram") { return Color(hex: "#EC4899") }
+        if s.contains("youtube") { return Color(hex: "#EF4444") }
+        if s.contains("tiktok") { return Color(hex: "#06B6D4") }
+        if s.contains("twitter") || s.contains("x") { return Color(hex: "#38BDF8") }
+        if s.contains("reddit") { return Color(hex: "#F97316") }
+        if s.contains("facebook") { return Color(hex: "#3B82F6") }
+        if s.contains("netflix") { return Color(hex: "#E11D48") }
+        if s.contains("twitch") { return Color(hex: "#A855F7") }
+        if s.contains("discord") { return Color(hex: "#6366F1") }
+        return Color(hex: "#94A3B8")
+    }
+    
+    private func formatSeconds(_ secs: Int) -> String {
+        if secs < 60 { return "\(secs)s" }
+        let mins = secs / 60
+        if mins < 60 { return "\(mins) min" }
+        let hours = mins / 60
+        let remMins = mins % 60
+        return "\(hours)h \(remMins)m"
+    }
+    
+    // MARK: - 4. Gráfico Semanal de Productividad
     private var weeklyActivityCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -356,7 +505,7 @@ public struct StatsDashboardView: View {
         )
     }
     
-    // MARK: - 4. Desglose de Distracciones Evitadas (Dopamina Positiva)
+    // MARK: - 5. Desglose de Distracciones Evitadas (Dopamina Positiva)
     private var topDistractionsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -438,7 +587,7 @@ public struct StatsDashboardView: View {
         )
     }
     
-    // MARK: - 5. Línea de Tiempo de Intercepciones Recientes
+    // MARK: - 6. Línea de Tiempo de Intercepciones Recientes
     private var recentActivityLogCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Registro en Vivo de Impulsos Interceptados", systemImage: "clock.arrow.circlepath")

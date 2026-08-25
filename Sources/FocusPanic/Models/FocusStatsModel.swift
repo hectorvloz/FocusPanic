@@ -1,5 +1,15 @@
 import Foundation
 
+public struct SocialUsageRecord: Codable, Equatable {
+    public var visitsCount: Int
+    public var totalSeconds: Int
+    
+    public init(visitsCount: Int = 0, totalSeconds: Int = 0) {
+        self.visitsCount = visitsCount
+        self.totalSeconds = totalSeconds
+    }
+}
+
 public struct InterceptionEvent: Identifiable, Codable, Equatable {
     public var id: UUID
     public var timestamp: Date
@@ -28,19 +38,22 @@ public struct DailyFocusRecord: Codable, Equatable {
     public var sessionsCompletedCount: Int
     public var interceptionsCount: Int
     public var interceptionsBySource: [String: Int] // ["Instagram": 8, "TikTok": 5]
+    public var socialUsage: [String: SocialUsageRecord] // ["Instagram": (visits: 18, seconds: 1200)]
     
     public init(
         dateString: String,
         focusMinutes: Int = 0,
         sessionsCompletedCount: Int = 0,
         interceptionsCount: Int = 0,
-        interceptionsBySource: [String: Int] = [:]
+        interceptionsBySource: [String: Int] = [:],
+        socialUsage: [String: SocialUsageRecord] = [:]
     ) {
         self.dateString = dateString
         self.focusMinutes = focusMinutes
         self.sessionsCompletedCount = sessionsCompletedCount
         self.interceptionsCount = interceptionsCount
         self.interceptionsBySource = interceptionsBySource
+        self.socialUsage = socialUsage
     }
 }
 

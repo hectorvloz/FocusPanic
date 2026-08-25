@@ -110,6 +110,9 @@ public final class BrowserWatchdogService {
             if runningBundleIds.contains("company.thebrowser.Arc") {
                 self.enforceRulesInChromium(appName: "Arc")
             }
+            
+            // 3. Rastreo Pasivo 24/7 de Tiempo y Visitas en Redes Sociales
+            self.trackActiveSocialUsage(runningBundleIds: runningBundleIds)
         }
     }
     
@@ -464,5 +467,88 @@ public final class BrowserWatchdogService {
                 sound: "Basso"
             )
         }
+    }
+    
+    // MARK: - 3. Rastreador Pasivo 24/7 de Tiempo en Pantalla & Visitas
+    private var lastActiveSocialDomain: String?
+    private var lastSocialSampleTime: Date = Date()
+    
+    private func trackActiveSocialUsage(runningBundleIds: Set<String>) {
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        let frontBundleId = frontApp?.bundleIdentifier ?? ""
+        
+        var currentUrl: String?
+        
+        if frontBundleId == "com.apple.Safari" {
+            currentUrl = getActiveSafariTabUrl()
+        } else if frontBundleId == "com.google.Chrome" {
+            currentUrl = getActiveChromiumTabUrl(appName: "Google Chrome")
+        } else if frontBundleId == "com.brave.Browser" {
+            currentUrl = getActiveChromiumTabUrl(appName: "Brave Browser")
+        } else if frontBundleId == "company.thebrowser.Arc" {
+            currentUrl = getActiveChromiumTabUrl(appName: "Arc")
+        } else if frontBundleId == "com.microsoft.edgemac" {
+            currentUrl = getActiveChromiumTabUrl(appName: "Microsoft Edge")
+        } else if frontBundleId == "com.operasoftware.Opera" {
+            currentUrl = getActiveChromiumTabUrl(appName: "Opera")
+        } else if frontBundleId == "com.vivaldi.Vivaldi" {
+            currentUrl = getActiveChromiumTabUrl(appName: "Vivaldi")
+        }
+        
+        guard let url = currentUrl, !url.isEmpty, !url.contains("127.0.0.1:8484") else {
+            lastActiveSocialDomain = nil
+            return
+        }
+        
+        let lowerUrl = url.lowercased()
+        let isSocialOrDistraction = lowerUrl.contains("instagram.com") ||
+                                    lowerUrl.contains("tiktok.com") ||
+                                    lowerUrl.contains("youtube.com") ||
+                                    lowerUrl.contains("twitter.com") ||
+                                    lowerUrl.contains("x.com") ||
+                                    lowerUrl.contains("reddit.com") ||
+                                    lowerUrl.contains("facebook.com") ||
+                                    lowerUrl.contains("netflix.com") ||
+                                    lowerUrl.contains("twitch.tv") ||
+                                    lowerUrl.contains("threads.net") ||
+                                    lowerUrl.contains("discord.com")
+        
+        if isSocialOrDistraction {
+            let matchedSocial = FocusStatsManager.shared.cleanSourceName(lowerUrl)
+            let isNewVisit = (lastActiveSocialDomain != matchedSocial)
+            let elapsed = Int(Date().timeIntervalSince(lastSocialSampleTime))
+            let secondsToAdd = (isNewVisit || elapsed > 10) ? 1 : max(1, min(elapsed, 3))
+            
+            FocusStatsManager.shared.recordSocialActivity(
+                source: matchedSocial,
+                seconds: secondsToAdd,
+                isNewVisit: isNewVisit
+            )
+            
+            lastActiveSocialDomain = matchedSocial
+            lastSocialSampleTime = Date()
+        } else {
+            lastActiveSocialDomain = nil
+        }
+    }
+    
+    private func getActiveSafariTabUrl() -> String? {
+        let script = "tell application \"Safari\" to try\nreturn URL of current tab of front window\nend try\nreturn \"\""
+        if let s = NSAppleScript(source: script) {
+            var err: NSDictionary?
+            let res = s.executeAndReturnError(&err)
+            return res.stringValue
+        }
+        return nil
+    }
+    
+    private func getActiveChromiumTabUrl(appName: String) -> String? {
+        let script = "tell application \"\(appName)\" to try\nreturn URL of active tab of front window\nend try\nreturn \"\""
+        if let s = NSAppleScript(source: script) {
+            var err: NSDictionary?
+            let res = s.executeAndReturnError(&err)
+            return res.stringValue
+        }
+        return nil
     }
 }
