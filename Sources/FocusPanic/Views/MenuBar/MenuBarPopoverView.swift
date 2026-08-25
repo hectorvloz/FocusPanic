@@ -347,30 +347,33 @@ public struct MenuBarPopoverView: View {
     
     private func quitApplication() {
         closePopover()
-        if engine.sessionStatus == .active {
-            if engine.settings.isMasterPasswordEnabled {
-                let alert = NSAlert()
-                alert.messageText = "Sesión de Enfoque Activa"
-                alert.informativeText = "Tienes una sesión de bloqueo en curso. Debes ingresar la clave del compañero para desbloquearla antes de salir."
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "Entendido")
-                alert.runModal()
+        if engine.settings.isMasterPasswordEnabled && !engine.settings.masterCompanionPassword.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "FocusPanic Protegido"
+            alert.informativeText = "No está permitido cerrar FocusPanic para evitar burlar los bloqueos. Tu compañero debe autorizar el cierre con su PIN."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Ingresar Clave del Compañero")
+            alert.addButton(withTitle: "Cancelar")
+            let res = alert.runModal()
+            if res == .alertFirstButtonReturn {
                 openAppEmergencyUnlock()
-                return
-            } else {
-                let alert = NSAlert()
-                alert.messageText = "¿Detener sesión y salir?"
-                alert.informativeText = "Al salir de FocusPanic se desactivará el temporizador y se desbloquearán las distracciones."
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "Detener y Salir")
-                alert.addButton(withTitle: "Seguir Enfocado")
-                let res = alert.runModal()
-                if res == .alertFirstButtonReturn {
-                    engine.endSession(didCompleteNormally: false)
-                    NSApplication.shared.terminate(nil)
-                }
-                return
             }
+            return
+        }
+        
+        if engine.sessionStatus == .active {
+            let alert = NSAlert()
+            alert.messageText = "¿Detener sesión y salir?"
+            alert.informativeText = "Al salir de FocusPanic se desactivará el temporizador y se desbloquearán las distracciones."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Detener y Salir")
+            alert.addButton(withTitle: "Seguir Enfocado")
+            let res = alert.runModal()
+            if res == .alertFirstButtonReturn {
+                engine.endSession(didCompleteNormally: false)
+                NSApplication.shared.terminate(nil)
+            }
+            return
         }
         NSApplication.shared.terminate(nil)
     }

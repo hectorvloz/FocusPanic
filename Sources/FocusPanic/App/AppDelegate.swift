@@ -36,31 +36,36 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let engine = FocusEngine.shared
-        if engine.sessionStatus == .active {
-            if engine.settings.isMasterPasswordEnabled {
-                let alert = NSAlert()
-                alert.messageText = "Sesión de Enfoque en Curso"
-                alert.informativeText = "Tienes una sesión de FocusPanic activa. Debes completar el tiempo o utilizar el desbloqueo con clave."
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "Entendido")
-                alert.runModal()
-                
+        
+        // Si la clave del compañero está activa, NUNCA permitir cerrar la app sin su PIN
+        if engine.settings.isMasterPasswordEnabled && !engine.settings.masterCompanionPassword.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "FocusPanic Protegido"
+            alert.informativeText = "No está permitido cerrar FocusPanic para evitar burlar los bloqueos. Tu compañero debe autorizar el cierre con su PIN."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Ingresar Clave del Compañero")
+            alert.addButton(withTitle: "Cancelar")
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                openMainWindow()
                 engine.initiateEmergencyUnlock()
-                return .terminateCancel
+            }
+            return .terminateCancel
+        }
+        
+        if engine.sessionStatus == .active {
+            let alert = NSAlert()
+            alert.messageText = "¿Detener sesión y salir?"
+            alert.informativeText = "Tienes una sesión de enfoque activa. Al salir se desbloquearán las distracciones."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Detener y Salir")
+            alert.addButton(withTitle: "Seguir Enfocado")
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                engine.endSession(didCompleteNormally: false)
+                return .terminateNow
             } else {
-                let alert = NSAlert()
-                alert.messageText = "¿Detener sesión y salir?"
-                alert.informativeText = "Tienes una sesión de enfoque activa. Al salir se desbloquearán las distracciones."
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "Detener y Salir")
-                alert.addButton(withTitle: "Seguir Enfocado")
-                let response = alert.runModal()
-                if response == .alertFirstButtonReturn {
-                    engine.endSession(didCompleteNormally: false)
-                    return .terminateNow
-                } else {
-                    return .terminateCancel
-                }
+                return .terminateCancel
             }
         }
         return .terminateNow
