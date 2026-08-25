@@ -68,6 +68,9 @@ public final class FocusEngine: ObservableObject {
         
         restoreActiveSessionIfNeeded()
         
+        // Iniciar servidor local de página de intervención motivacional
+        LocalInterventionServer.shared.start()
+        
         // Aplicar protección permanente al iniciar si no hay sesión activa
         if currentSession == nil {
             applyPermanentProtectionOnly()
