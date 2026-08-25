@@ -101,6 +101,15 @@ public final class BrowserWatchdogService {
             if runningBundleIds.contains("com.microsoft.edgemac") {
                 self.enforceRulesInChromium(appName: "Microsoft Edge")
             }
+            if runningBundleIds.contains("com.operasoftware.Opera") {
+                self.enforceRulesInChromium(appName: "Opera")
+            }
+            if runningBundleIds.contains("com.vivaldi.Vivaldi") {
+                self.enforceRulesInChromium(appName: "Vivaldi")
+            }
+            if runningBundleIds.contains("company.thebrowser.Arc") {
+                self.enforceRulesInChromium(appName: "Arc")
+            }
         }
     }
     
@@ -153,6 +162,16 @@ public final class BrowserWatchdogService {
         // Arc Incognito
         if runningBundleIds.contains("company.thebrowser.Arc") {
             if closeChromiumIncognito(appName: "Arc") { closedAny = true }
+        }
+        
+        // Opera Private Window
+        if runningBundleIds.contains("com.operasoftware.Opera") {
+            if closeChromiumIncognito(appName: "Opera") { closedAny = true }
+        }
+        
+        // Vivaldi Private Window
+        if runningBundleIds.contains("com.vivaldi.Vivaldi") {
+            if closeChromiumIncognito(appName: "Vivaldi") { closedAny = true }
         }
         
         if closedAny {
