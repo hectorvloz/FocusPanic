@@ -145,7 +145,7 @@ public struct SettingsContainerView: View {
                 isSuccess = true
                 errorMessage = nil
             }
-            NSSound(named: "Hero")?.play()
+            SoundService.shared.play("Hero")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 withAnimation {
                     isUnlocked = true
@@ -154,7 +154,7 @@ public struct SettingsContainerView: View {
                 }
             }
         } else {
-            NSSound(named: "Basso")?.play()
+            SoundService.shared.play("Basso")
             errorMessage = "Clave incorrecta. Pídesela a tu compañero."
         }
     }
@@ -412,7 +412,7 @@ public struct PermanentShieldView: View {
                 isSuccess = true
                 errorMessage = nil
             }
-            NSSound(named: "Hero")?.play()
+            SoundService.shared.play("Hero")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 withAnimation {
                     isUnlocked = true
@@ -421,7 +421,7 @@ public struct PermanentShieldView: View {
                 }
             }
         } else {
-            NSSound(named: "Basso")?.play()
+            SoundService.shared.play("Basso")
             errorMessage = "Clave incorrecta (Usa 1234)."
         }
     }

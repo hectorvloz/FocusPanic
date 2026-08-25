@@ -90,7 +90,6 @@ public struct PasscodeKeypadView: View {
                                             lineWidth: hasChar ? 2 : 1
                                         )
                                 )
-                                .shadow(color: hasChar ? (isSuccess ? Color.green.opacity(0.3) : tintColor.opacity(0.3)) : Color.clear, radius: 5, x: 0, y: 2)
                             
                             if hasChar {
                                 if showPlain {
@@ -178,9 +177,7 @@ public struct PasscodeKeypadView: View {
             }
         }
         .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                isInputFocused = true
-            }
+            isInputFocused = true
         }
     }
     
@@ -206,7 +203,7 @@ public struct PasscodeKeypadView: View {
     
     private func appendDigit(_ digit: String) {
         if pin.count < maxDigits {
-            NSSound(named: "Tink")?.play()
+            SoundService.shared.play("Tink")
             pin += digit
             if pin.count == maxDigits {
                 onComplete?(pin)
@@ -216,12 +213,13 @@ public struct PasscodeKeypadView: View {
     
     private func deleteDigit() {
         if !pin.isEmpty {
+            SoundService.shared.play("Pop")
             pin.removeLast()
         }
     }
     
     public func triggerShake() {
-        NSSound(named: "Basso")?.play()
+        SoundService.shared.play("Basso")
         withAnimation(.default) { shakeOffset = -10 }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { withAnimation(.default) { shakeOffset = 10 } }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { withAnimation(.default) { shakeOffset = -6 } }
