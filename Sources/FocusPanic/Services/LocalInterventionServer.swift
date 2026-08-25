@@ -23,13 +23,14 @@ public final class LocalInterventionServer {
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
             self.listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
             
             listener?.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
                     self.isRunning = true
-                    print("🧘 [FocusPanic] Servidor de intervención activo en http://127.0.0.1:\(self.port)")
+                    print("🧘 [FocusPanic] Servidor de intervención activo y seguro en http://127.0.0.1:\(self.port)")
                 case .failed(let error):
                     print("⚠️ [FocusPanic] Servidor de intervención error: \(error)")
                     self.isRunning = false
@@ -54,6 +55,15 @@ public final class LocalInterventionServer {
         isRunning = false
     }
     
+    private func htmlEscape(_ string: String) -> String {
+        return string
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+    
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: .global(qos: .userInitiated))
         
@@ -67,7 +77,7 @@ public final class LocalInterventionServer {
                         let sub = String(firstLine[range.upperBound...])
                         let siteName = sub.components(separatedBy: " ").first?.components(separatedBy: "&").first ?? ""
                         if !siteName.isEmpty {
-                            requestedHost = siteName.removingPercentEncoding ?? siteName
+                            requestedHost = self.htmlEscape(siteName.removingPercentEncoding ?? siteName)
                         }
                     }
                 }
@@ -81,7 +91,7 @@ public final class LocalInterventionServer {
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
                                 .components(separatedBy: ":").first ?? ""
                             if !host.isEmpty && host != "127.0.0.1" && host != "localhost" {
-                                requestedHost = host
+                                requestedHost = self.htmlEscape(host)
                             }
                             break
                         }

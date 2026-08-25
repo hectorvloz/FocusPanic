@@ -108,55 +108,63 @@ public final class BrowserWatchdogService {
         tell application "Safari"
             try
                 repeat with w in windows
-                    repeat with t in tabs of w
-                        set currentURL to URL of t
-                        if currentURL is not missing value and currentURL is not "" and currentURL does not start with "about:" and currentURL does not contain "127.0.0.1:8484" and currentURL does not contain "localhost:8484" then
-                            -- Verificar primero si es un subdominio o sitio en Lista Blanca
-                            set isAllowed to false
-                            repeat with allowed in allowedList
-                                if currentURL contains allowed then
-                                    set isAllowed to true
+                repeat with t in tabs of w
+                    set currentURL to URL of t
+                    if currentURL is not missing value and currentURL is not "" and currentURL does not start with "about:" and currentURL does not contain "127.0.0.1:8484" and currentURL does not contain "localhost:8484" then
+                        -- Verificar primero si es un subdominio o sitio en Lista Blanca
+                        set isAllowed to false
+                        repeat with allowed in allowedList
+                            if currentURL contains allowed then
+                                set isAllowed to true
+                                exit repeat
+                            end if
+                        end repeat
+                        
+                        -- Solo si NO está en Lista Blanca, verificar bloqueo
+                        if isAllowed is false then
+                            repeat with blocked in blockedList
+                                if currentURL contains blocked then
+                                    set URL of t to ("http://127.0.0.1:8484/?site=" & blocked)
+                                    set blockedFound to blocked
                                     exit repeat
                                 end if
                             end repeat
-                            
-                            -- Solo si NO está en Lista Blanca, verificar bloqueo
-                            if isAllowed is false then
-                                repeat with blocked in blockedList
-                                    if currentURL contains blocked then
-                                        set URL of t to ("http://127.0.0.1:8484/?site=" & blocked)
-                                        set blockedFound to blocked
-                                        exit repeat
-                                    end if
-                                end repeat
-                            end if
                         end if
-                    end repeat
+                    end if
                 end repeat
-            end try
-        end tell
-        return blockedFound
-        """
-        
-        var error: NSDictionary?
-        if let script = NSAppleScript(source: safariScript) {
-            let result = script.executeAndReturnError(&error)
-            let blockedDomain = result.stringValue ?? ""
-            if !blockedDomain.isEmpty {
-                notifyInterception(domain: blockedDomain, isWhitelist: false)
-            }
+            end repeat
+        end try
+    end tell
+    return blockedFound
+    """
+    
+    var error: NSDictionary?
+    if let script = NSAppleScript(source: safariScript) {
+        let result = script.executeAndReturnError(&error)
+        let blockedDomain = result.stringValue ?? ""
+        if !blockedDomain.isEmpty {
+            notifyInterception(domain: blockedDomain, isWhitelist: false)
         }
     }
+}
+
+private func sanitizeForAppleScript(_ string: String) -> String {
+    return string
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\r", with: "")
+        .replacingOccurrences(of: "\n", with: "")
+}
+
+// MARK: - Modo Bloqueo Total (Solo Lista Blanca)
+private func enforceWhitelistInSafari() {
+    var allAllowed = Set(self.allowedDomains.map { sanitizeForAppleScript($0.replacingOccurrences(of: "www.", with: "")) })
+    allAllowed.formUnion(AppSettings.systemEssentialDomains.map { sanitizeForAppleScript($0) })
     
-    // MARK: - Modo Bloqueo Total (Solo Lista Blanca)
-    private func enforceWhitelistInSafari() {
-        var allAllowed = Set(self.allowedDomains.map { $0.replacingOccurrences(of: "www.", with: "") })
-        allAllowed.formUnion(AppSettings.systemEssentialDomains)
-        
-        let allowedListFormatted = allAllowed
-            .filter { !$0.isEmpty }
-            .map { "\"\($0)\"" }
-            .joined(separator: ", ")
+    let allowedListFormatted = allAllowed
+        .filter { !$0.isEmpty }
+        .map { "\"\($0)\"" }
+        .joined(separator: ", ")
         
         let safariScript = """
         set allowedList to {\(allowedListFormatted)}

@@ -175,7 +175,14 @@ public final class HostBlockerService {
         lines.append(beginTag)
         lines.append("# Bloqueo Universal FocusPanic TDAH")
         
+        // Validación estricta de nombres de host para proteger /etc/hosts
+        let domainRegex = try? NSRegularExpression(pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+        
         for domain in allDomains.sorted() {
+            guard let regex = domainRegex,
+                  regex.firstMatch(in: domain, options: [], range: NSRange(location: 0, length: domain.utf16.count)) != nil else {
+                continue
+            }
             lines.append("0.0.0.0" + tab + domain)
             lines.append("127.0.0.1" + tab + domain)
             lines.append("::1" + tab + domain)
@@ -234,15 +241,21 @@ public final class HostBlockerService {
     
     public func uninstallHelper() throws {
         try removeBlock()
-        let cmd = "rm -f /usr/local/bin/focuspanic-helper /etc/sudoers.d/focuspanic-helper 2>/dev/null"
-        shell(cmd)
+        let script = "do shell script \"rm -f /usr/local/bin/focuspanic-helper /etc/sudoers.d/focuspanic 2>/dev/null\" with administrator privileges"
+        var error: NSDictionary?
+        if let appleScript = NSAppleScript(source: script) {
+            appleScript.executeAndReturnError(&error)
+        }
     }
     
     public func flushDNSCache() {
         if isHelperInstalled {
             let _ = runHelper(args: ["flush"])
         } else {
-            shell("dscacheutil -flushcache")
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/dscacheutil")
+            process.arguments = ["-flushcache"]
+            try? process.run()
         }
     }
     
@@ -262,13 +275,6 @@ public final class HostBlockerService {
         } catch {
             return false
         }
-    }
-    
-    private func shell(_ command: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
-        try? process.run()
     }
     
     private func removeBlockSection(from content: String) -> String {
