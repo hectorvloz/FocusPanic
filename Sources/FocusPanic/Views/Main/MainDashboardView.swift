@@ -3,10 +3,12 @@ import SwiftUI
 public struct MainDashboardView: View {
     @ObservedObject var engine = FocusEngine.shared
     @ObservedObject var statsManager = FocusStatsManager.shared
+    @ObservedObject var l10n = LocalizationService.shared
     @State private var selectedPreset: FocusPreset? = FocusPreset.defaultPresets[1] // Pomodoro por defecto
     @State private var customDurationMinutes: Int = 25
     @State private var isShowingSettings = false
     @State private var isShowingStats = false
+    @State private var isShowingIronStreak = false
     
     public var body: some View {
         ZStack {
@@ -30,6 +32,48 @@ public struct MainDashboardView: View {
                     idleDashboardContent
                 }
             }
+            
+            // Notificación Flotante de Subida de Nivel / Insignia
+            if let tier = statsManager.newlyUnlockedTier {
+                VStack {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            Circle().fill(Color(hex: tier.colorHex).opacity(0.25)).frame(width: 38, height: 38)
+                            Image(systemName: tier.icon).font(.headline).foregroundColor(Color(hex: tier.colorHex))
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("¡SUBISTE DE NIVEL! 🎉")
+                                .font(.caption2).fontWeight(.heavy).foregroundColor(Color(hex: tier.colorHex))
+                            Text("Ahora eres Nivel \(tier.level): \(tier.title)")
+                                .font(.subheadline).fontWeight(.bold).foregroundColor(.primary)
+                        }
+                        Spacer()
+                        Button("Ver") {
+                            statsManager.newlyUnlockedTier = nil
+                            isShowingIronStreak = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: tier.colorHex))
+                        .controlSize(.small)
+                        
+                        Button(action: { statsManager.newlyUnlockedTier = nil }) {
+                            Image(systemName: "xmark").font(.caption).foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(12)
+                    .background(VisualEffectBackground())
+                    .cornerRadius(14)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: tier.colorHex).opacity(0.5), lineWidth: 1.5))
+                    .shadow(color: Color(hex: tier.colorHex).opacity(0.3), radius: 12)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 10)
+                    
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(200)
+            }
         }
         .frame(minWidth: 740, minHeight: 580)
         .sheet(isPresented: $engine.isSettingsPresented) {
@@ -38,11 +82,15 @@ public struct MainDashboardView: View {
         .sheet(isPresented: $isShowingStats) {
             StatsDashboardView()
         }
+        .sheet(isPresented: $isShowingIronStreak) {
+            IronStreakView()
+        }
         .sheet(isPresented: $engine.isEmergencyModalPresented) {
             EmergencyUnlockModalView()
         }
         .sheet(isPresented: $engine.isShowingOnboarding) {
             OnboardingWizardView()
+                .interactiveDismissDisabled(true)
         }
     }
     
@@ -77,44 +125,51 @@ public struct MainDashboardView: View {
             Spacer()
             
             HStack(spacing: 14) {
-                // Botón Interactivo de Racha y Dopamina Positiva
-                Button(action: { isShowingStats = true }) {
+                // Botón Interactivo de Racha de Hierro y Nivel
+                Button(action: { isShowingIronStreak = true }) {
+                    let tier = statsManager.currentTier
                     HStack(spacing: 6) {
                         Image(systemName: "flame.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(Color(hex: "#F97316"))
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [Color(hex: "#FDE047"), Color(hex: tier.colorHex)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
                         
                         Text("\(statsManager.stats.currentStreakDays)d racha")
                             .font(.caption)
                             .fontWeight(.heavy)
-                            .foregroundColor(Color(hex: "#F97316"))
+                            .foregroundColor(Color(hex: tier.colorHex))
                         
                         Text("•")
                             .font(.caption2)
-                            .foregroundColor(Color(hex: "#F97316").opacity(0.6))
+                            .foregroundColor(.secondary)
                         
-                        Image(systemName: "shield.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color(hex: "#F43F5E"))
+                        Image(systemName: tier.icon)
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: tier.colorHex))
                         
-                        Text("\(statsManager.todayInterceptionsCount) salvadas")
+                        Text("Niv. \(tier.level)")
                             .font(.caption)
                             .fontWeight(.bold)
-                            .foregroundColor(Color(hex: "#F43F5E"))
+                            .foregroundColor(.primary)
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(hex: "#F97316").opacity(0.12))
+                            .fill(Color(hex: tier.colorHex).opacity(0.12))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color(hex: "#F97316").opacity(0.3), lineWidth: 1)
+                                    .stroke(Color(hex: tier.colorHex).opacity(0.35), lineWidth: 1)
                             )
                     )
                 }
                 .buttonStyle(.plain)
-                .help("Ver Racha y Estadísticas de Dopamina")
+                .help("Ver Racha de Hierro, Nivel y Logros")
                 
                 let allowedCount = engine.settings.allowedWebsites.filter { $0.isEnabled }.count
                 HStack(spacing: 4) {
@@ -122,13 +177,51 @@ public struct MainDashboardView: View {
                         .foregroundColor(Color(hex: "#10B981"))
                     Text("\(allowedCount) permitidas")
                         .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(Color(hex: "#10B981"))
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 3)
+                .padding(.vertical, 4)
                 .background(Color(hex: "#10B981").opacity(0.12))
                 .cornerRadius(6)
+                
+                // Botón Dedicado de Estadísticas de Redes Sociales & Distracciones
+                Button(action: { isShowingStats = true }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(Color(hex: "#6366F1"))
+                        Text("Estadísticas")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(Color(hex: "#6366F1"))
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(hex: "#6366F1").opacity(0.12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color(hex: "#6366F1").opacity(0.35), lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Ver Estadísticas de Uso, Redes Sociales e Impulsos Interceptados")
+                
+                let isEn = LocalizationService.shared.currentLanguage == .english
+                
+                // Botón Seguro de Reinicio Atómico de la App
+                Button(action: { engine.relaunchApp() }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isEn ? "Restart FocusPanic (Cleans memory & refreshes all blocking engines)" : "Reiniciar FocusPanic (Limpia memoria y reactiva todos los motores)")
                 
                 Button(action: { engine.isSettingsPresented = true }) {
                     Image(systemName: "gearshape.fill")
@@ -138,7 +231,7 @@ public struct MainDashboardView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Configuración")
+                .help(isEn ? "Settings" : "Configuración")
             }
         }
         .padding(.horizontal, 24)

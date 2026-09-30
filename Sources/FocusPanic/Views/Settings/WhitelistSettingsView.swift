@@ -16,6 +16,28 @@ public struct WhitelistSettingsView: View {
     @State private var appSearchText = ""
     @State private var sheetSearchText = ""
     
+    // Paginación (Máximo 10 por vista con Ver más)
+    @State private var showAllAllowedWebsites = false
+    @State private var showAllAllowedApps = false
+    
+    private var sortedAllowedWebsites: [BlockedWebsite] {
+        engine.settings.allowedWebsites.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
+    }
+    
+    private var displayedAllowedWebsites: [BlockedWebsite] {
+        if showAllAllowedWebsites || sortedAllowedWebsites.count <= 10 {
+            return sortedAllowedWebsites
+        }
+        return Array(sortedAllowedWebsites.prefix(10))
+    }
+    
+    private var displayedAllowedApps: [BlockedApp] {
+        if showAllAllowedApps || filteredAllowedApps.count <= 10 {
+            return filteredAllowedApps
+        }
+        return Array(filteredAllowedApps.prefix(10))
+    }
+    
     public init() {}
     
     public var body: some View {
@@ -90,20 +112,27 @@ public struct WhitelistSettingsView: View {
                         
                         if webAddMode == 0 {
                             HStack(spacing: 10) {
-                                TextField("Nombre (ej. Meta Business)", text: $singleWebName)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: .infinity)
-                                
-                                TextField("URL / Subdominio / Ruta (ej. business.facebook.com, reddit.com/r/swift)", text: $singleWebDomain)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: .infinity)
-                                    .onSubmit { addSingleAllowedWeb() }
+                                HStack(spacing: 6) {
+                                    Image(systemName: "globe")
+                                        .foregroundColor(.secondary)
+                                    TextField("Escribe URL, subdominio o ruta (ej. business.facebook.com, docs.google.com)...", text: $singleWebDomain)
+                                        .textFieldStyle(.plain)
+                                        .onSubmit { addSingleAllowedWeb() }
+                                }
+                                .frame(height: 32)
+                                .padding(.horizontal, 10)
+                                .background(Color(NSColor.controlBackgroundColor))
+                                .cornerRadius(8)
                                 
                                 Button(action: { addSingleAllowedWeb() }) {
                                     HStack(spacing: 4) {
-                                        Image(systemName: "plus")
+                                        Image(systemName: "plus.circle.fill")
                                         Text("Permitir")
                                     }
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .frame(height: 32)
+                                    .padding(.horizontal, 14)
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .tint(Color(hex: "#10B981"))
@@ -143,7 +172,7 @@ public struct WhitelistSettingsView: View {
                     
                     // Lista de Sitios Web Permitidos
                     VStack(spacing: 6) {
-                        ForEach(engine.settings.allowedWebsites) { site in
+                        ForEach(displayedAllowedWebsites) { site in
                             HStack(spacing: 12) {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 6)
@@ -175,8 +204,7 @@ public struct WhitelistSettingsView: View {
                                     
                                     if site.isCustom || !AppSettings.defaultAllowedWebsites.contains(where: { $0.domain == site.domain }) {
                                         Button(action: {
-                                            engine.settings.allowedWebsites.removeAll { $0.id == site.id }
-                                            engine.saveSettings()
+                                            engine.removeAllowedWebsite(id: site.id)
                                         }) {
                                             Image(systemName: "trash")
                                                 .font(.caption)
@@ -191,6 +219,30 @@ public struct WhitelistSettingsView: View {
                             .background(site.isEnabled ? Color(hex: "#10B981").opacity(0.08) : Color.secondary.opacity(0.04))
                             .cornerRadius(8)
                         }
+                    }
+                    
+                    if sortedAllowedWebsites.count > 10 {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showAllAllowedWebsites.toggle()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: showAllAllowedWebsites ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                Text(showAllAllowedWebsites
+                                     ? "Ver menos sitios"
+                                     : "Ver más sitios (\(sortedAllowedWebsites.count - 10) adicionales)")
+                            }
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(Color(hex: "#10B981"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(Color(hex: "#10B981").opacity(0.08))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
                     }
                 }
                 .padding(14)
@@ -305,7 +357,7 @@ public struct WhitelistSettingsView: View {
                     
                     // Lista de Aplicaciones Actualmente Permitidas
                     VStack(spacing: 6) {
-                        ForEach(filteredAllowedApps) { app in
+                        ForEach(displayedAllowedApps) { app in
                             HStack(spacing: 12) {
                                 AppIconView(app: app, size: 28)
                                 
@@ -345,6 +397,30 @@ public struct WhitelistSettingsView: View {
                             .background(app.isEnabled ? Color(hex: "#10B981").opacity(0.08) : Color.secondary.opacity(0.04))
                             .cornerRadius(8)
                         }
+                    }
+                    
+                    if filteredAllowedApps.count > 10 {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showAllAllowedApps.toggle()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: showAllAllowedApps ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                Text(showAllAllowedApps
+                                     ? "Ver menos aplicaciones"
+                                     : "Ver más aplicaciones (\(filteredAllowedApps.count - 10) adicionales)")
+                            }
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(Color(hex: "#10B981"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(Color(hex: "#10B981").opacity(0.08))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
                     }
                 }
                 .padding(14)
@@ -480,37 +556,38 @@ public struct WhitelistSettingsView: View {
     }
     
     private var filteredAllowedApps: [BlockedApp] {
-        if appSearchText.isEmpty {
-            return engine.settings.allowedApps
+        let apps = engine.settings.allowedApps.filter { app in
+            AppBlockerService.isAppInstalled(app) &&
+            (appSearchText.isEmpty ||
+             app.appName.localizedCaseInsensitiveContains(appSearchText) ||
+             app.bundleIdentifier.localizedCaseInsensitiveContains(appSearchText))
         }
-        return engine.settings.allowedApps.filter {
-            $0.appName.localizedCaseInsensitiveContains(appSearchText) ||
-            $0.bundleIdentifier.localizedCaseInsensitiveContains(appSearchText)
-        }
+        return apps.sorted(by: { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending })
     }
     
     private var filteredSheetApps: [BlockedApp] {
-        if sheetSearchText.isEmpty {
-            return discoveredApps
+        let apps = discoveredApps.filter { app in
+            AppBlockerService.isAppInstalled(app) &&
+            (sheetSearchText.isEmpty ||
+             app.appName.localizedCaseInsensitiveContains(sheetSearchText) ||
+             app.bundleIdentifier.localizedCaseInsensitiveContains(sheetSearchText))
         }
-        return discoveredApps.filter {
-            $0.appName.localizedCaseInsensitiveContains(sheetSearchText) ||
-            $0.bundleIdentifier.localizedCaseInsensitiveContains(sheetSearchText)
-        }
+        return apps.sorted(by: { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending })
     }
     
     private var availableDiscoveredApps: [BlockedApp] {
         let configuredIds = Set(engine.settings.allowedApps.map { $0.bundleIdentifier })
-        return discoveredApps.filter { app in
+        let apps = discoveredApps.filter { app in
             !configuredIds.contains(app.bundleIdentifier) &&
+            AppBlockerService.isAppInstalled(app) &&
             (!appSearchText.isEmpty && app.appName.localizedCaseInsensitiveContains(appSearchText))
         }
+        return apps.sorted(by: { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending })
     }
     
     private func addSingleAllowedWeb() {
-        engine.addAllowedWebsite(domain: singleWebDomain, name: singleWebName)
+        engine.addAllowedWebsite(domain: singleWebDomain)
         singleWebDomain = ""
-        singleWebName = ""
     }
     
     private func processBatchAllowedWebs() {

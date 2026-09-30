@@ -6,22 +6,63 @@ public final class AppBlockerService {
     public static let shared = AppBlockerService()
     
     private var isMonitoring = false
+    private var isWhitelistMode = false
+    private var isAdultShieldActive = false
+    
     private var blockedBundleIds = Set<String>()
     private var blockedNames = Set<String>()
     private var blockedKeywords = Set<String>()
+    
+    private var allowedBundleIds = Set<String>()
+    private var allowedNames = Set<String>()
     
     private var timer: Timer?
     private var launchObserver: NSObjectProtocol?
     private var activateObserver: NSObjectProtocol?
     private var lastInterventionNotificationTimes: [String: Date] = [:]
     
+    // Apps esenciales del sistema que nunca deben terminarse
+    private let systemProtectedBundleIds: Set<String> = [
+        "com.focuspanic.mac",
+        "com.apple.finder",
+        "com.apple.dock",
+        "com.apple.dock.extra",
+        "com.apple.systemevents",
+        "com.apple.systemuiserver",
+        "com.apple.windowmanager",
+        "com.apple.controlcenter",
+        "com.apple.notificationcenterui",
+        "com.apple.spotlight",
+        "com.apple.loginwindow",
+        "com.apple.screencapture",
+        "com.apple.wallpaper",
+        "com.apple.wallpaper.agent",
+        "com.apple.desktopscreenservices",
+        "com.apple.quicklook",
+        "com.apple.quicklook.ui.helper",
+        "com.apple.coreservices.uiagent",
+        "com.apple.keychaincircle",
+        "com.apple.storeuid",
+        "com.apple.siri",
+        "com.apple.siri.launcher",
+        "com.apple.airplay",
+        "com.apple.menuextra"
+    ]
+    
     private init() {}
     
-    /// Inicia la vigilancia activa de aplicaciones bloqueadas
-    public func startMonitoring(blockedApps: [BlockedApp]) {
+    /// Inicia la vigilancia activa de aplicaciones bloqueadas o modo Lista Blanca
+    public func startMonitoring(
+        blockedApps: [BlockedApp],
+        allowedApps: [BlockedApp] = [],
+        isWhitelistMode: Bool = false,
+        isAdultShieldActive: Bool = false
+    ) {
+        self.isWhitelistMode = isWhitelistMode
+        self.isAdultShieldActive = isAdultShieldActive
+        
         var bundleIds = Set<String>()
         var names = Set<String>()
-        var keywords = Set<String>()
         
         for app in blockedApps {
             let bId = app.bundleIdentifier.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,20 +73,25 @@ public final class AppBlockerService {
             }
             if !name.isEmpty {
                 names.insert(name)
-                // Extraer palabra clave raíz (ej. "Telegram" -> "telegram", "Mail de Apple" -> "mail")
-                let rootWords = name.components(separatedBy: CharacterSet.alphanumerics.inverted)
-                    .filter { $0.count >= 3 && $0 != "app" && $0 != "apple" && $0 != "mac" }
-                for word in rootWords {
-                    keywords.insert(word.lowercased())
-                }
             }
         }
         
         self.blockedBundleIds = bundleIds
         self.blockedNames = names
-        self.blockedKeywords = keywords
+        self.blockedKeywords.removeAll()
         
-        guard !blockedBundleIds.isEmpty || !blockedNames.isEmpty else {
+        var allowedIds = Set<String>()
+        var allowedNms = Set<String>()
+        for app in allowedApps where app.isEnabled {
+            let bId = app.bundleIdentifier.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = app.appName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !bId.isEmpty { allowedIds.insert(bId) }
+            if !name.isEmpty { allowedNms.insert(name) }
+        }
+        self.allowedBundleIds = allowedIds
+        self.allowedNames = allowedNms
+        
+        if !isWhitelistMode && blockedBundleIds.isEmpty && blockedNames.isEmpty {
             stopMonitoring()
             return
         }
@@ -55,10 +101,10 @@ public final class AppBlockerService {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // 1. Cerrar inmediatamente todas las que ya estén abiertas
+            // 1. Cerrar inmediatamente todas las que no estén permitidas
             self.terminateRunningBlockedApps()
             
-            // 2. Escuchar cuando se abra o active una app
+            // 2. Escuchar cuando se abra o active una app en primer plano
             if self.launchObserver == nil {
                 self.launchObserver = NSWorkspace.shared.notificationCenter.addObserver(
                     forName: NSWorkspace.didLaunchApplicationNotification,
@@ -85,9 +131,9 @@ public final class AppBlockerService {
                 }
             }
             
-            // 3. Revisión periódica de alta velocidad (cada 0.4s)
+            // 3. Revisión periódica cada 1.0s para apps de usuario en primer plano
             self.timer?.invalidate()
-            self.timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            self.timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 self?.terminateRunningBlockedApps()
             }
         }
@@ -96,6 +142,7 @@ public final class AppBlockerService {
     /// Detiene la vigilancia de aplicaciones
     public func stopMonitoring() {
         self.isMonitoring = false
+        self.isWhitelistMode = false
         self.timer?.invalidate()
         self.timer = nil
         
@@ -111,12 +158,14 @@ public final class AppBlockerService {
         self.blockedBundleIds.removeAll()
         self.blockedNames.removeAll()
         self.blockedKeywords.removeAll()
+        self.allowedBundleIds.removeAll()
+        self.allowedNames.removeAll()
     }
     
     public func terminateRunningBlockedApps() {
         guard isMonitoring else { return }
         let running = NSWorkspace.shared.runningApplications
-        for app in running {
+        for app in running where app.activationPolicy == .regular {
             checkAndTerminate(app: app)
         }
     }
@@ -124,62 +173,124 @@ public final class AppBlockerService {
     private func checkAndTerminate(app: NSRunningApplication) {
         guard isMonitoring else { return }
         
-        let bundleId = app.bundleIdentifier?.lowercased() ?? ""
-        let localizedName = app.localizedName?.lowercased() ?? ""
-        let bundleName = app.bundleURL?.lastPathComponent.lowercased().replacingOccurrences(of: ".app", with: "") ?? ""
-        let execName = app.executableURL?.lastPathComponent.lowercased() ?? ""
+        // 0. Proteger FocusPanic y sus procesos
+        if app.processIdentifier == ProcessInfo.processInfo.processIdentifier {
+            return
+        }
         
-        // No bloquear la propia FocusPanic ni Finder
-        if bundleId == "com.focuspanic.mac" || bundleId == "com.apple.finder" || bundleId == "com.apple.systemevents" {
+        // 1. REGLA FUNDAMENTAL: SOLO monitorear y bloquear aplicaciones de PRIMER PLANO (con UI regular de usuario)
+        // Las aplicaciones y procesos en segundo plano (.accessory y .prohibited) como fondo de pantalla, dock plugins,
+        // servicios de audio, helpers del sistema, utilidades de barra de menús, Creative Cloud background, etc. NUNCA se cierran.
+        guard app.activationPolicy == .regular else {
+            return
+        }
+        
+        let bundleId = app.bundleIdentifier?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let localizedName = app.localizedName?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let bundleName = app.bundleURL?.lastPathComponent.lowercased().replacingOccurrences(of: ".app", with: "").trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let execName = app.executableURL?.lastPathComponent.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        
+        // 2. Proteger FocusPanic y elementos esenciales del sistema operativo
+        if bundleId.isEmpty || systemProtectedBundleIds.contains(bundleId) || bundleId == "com.focuspanic.mac" || bundleId.contains("focuspanic") {
+            return
+        }
+        
+        // Proteger componentes y servicios internos del sistema macOS
+        if bundleId.hasPrefix("com.apple.wallpaper") ||
+           bundleId.hasPrefix("com.apple.desktopscreenservices") ||
+           bundleId.hasPrefix("com.apple.coreservices") ||
+           bundleId.hasPrefix("com.apple.systemuiserver") ||
+           bundleId.hasPrefix("com.apple.dock") ||
+           bundleId.hasPrefix("com.apple.windowmanager") ||
+           bundleId.hasPrefix("com.apple.controlcenter") ||
+           bundleId.hasPrefix("com.apple.notificationcenter") ||
+           bundleId.hasPrefix("com.apple.screencapture") ||
+           bundleId.hasPrefix("com.apple.menuextra") ||
+           bundleId.hasPrefix("com.apple.keychain") ||
+           bundleId.hasPrefix("com.apple.inputmethod") ||
+           bundleId.hasPrefix("com.apple.corelocation") ||
+           bundleId.hasPrefix("com.apple.textinput") ||
+           bundleId.hasPrefix("com.apple.pressandhold") ||
+           bundleId.hasPrefix("com.apple.webkit") {
             return
         }
         
         var isBlocked = false
         
-        // 1. Coincidencia por Bundle ID exacto
-        if !bundleId.isEmpty && blockedBundleIds.contains(bundleId) {
-            isBlocked = true
-        }
-        
-        // 2. Coincidencia por Bundle ID parcial
-        if !isBlocked && !bundleId.isEmpty {
-            for bId in blockedBundleIds {
-                if bundleId.contains(bId) || bId.contains(bundleId) {
-                    isBlocked = true
-                    break
-                }
+        // Bloqueo forzoso del Navegador DuckDuckGo si el Escudo Anti-Porn está activo
+        if isAdultShieldActive {
+            if bundleId == "com.duckduckgo.macos.browser" ||
+               bundleId == "com.duckduckgo.mobile.ios" ||
+               bundleId.contains("duckduckgo.macos.browser") ||
+               localizedName == "duckduckgo" ||
+               localizedName == "duckduckgo privacy browser" ||
+               bundleName == "duckduckgo" ||
+               execName == "duckduckgo" {
+                isBlocked = true
             }
         }
         
-        // 3. Coincidencia por Nombre de App o Nombre de Bundle
-        if !isBlocked {
-            for name in blockedNames {
-                if (!localizedName.isEmpty && localizedName == name) ||
-                   (!bundleName.isEmpty && bundleName == name) ||
-                   (!execName.isEmpty && execName == name) ||
-                   (!localizedName.isEmpty && localizedName.contains(name)) ||
-                   (!bundleName.isEmpty && bundleName.contains(name)) {
-                    isBlocked = true
-                    break
+        if !isBlocked && isWhitelistMode {
+            // MODO LISTA BLANCA (BLOQUEO TOTAL): Solo se permiten apps de usuario explícitamente en la lista blanca
+            var isExplicitlyAllowed = false
+            
+            if allowedBundleIds.contains(bundleId) {
+                isExplicitlyAllowed = true
+            }
+            
+            if !isExplicitlyAllowed {
+                for aId in allowedBundleIds {
+                    if bundleId == aId || (bundleId.count > 4 && bundleId.hasPrefix(aId)) {
+                        isExplicitlyAllowed = true
+                        break
+                    }
                 }
             }
-        }
-        
-        // 4. Coincidencia por Palabras Clave de la App (ej. discord, telegram, whatsapp, slack, steam, spotify)
-        if !isBlocked {
-            for kw in blockedKeywords {
-                if (!localizedName.isEmpty && localizedName.contains(kw)) ||
-                   (!bundleName.isEmpty && bundleName.contains(kw)) ||
-                   (!bundleId.isEmpty && bundleId.contains(kw)) ||
-                   (!execName.isEmpty && execName.contains(kw)) {
-                    isBlocked = true
-                    break
+            
+            if !isExplicitlyAllowed {
+                for aName in allowedNames {
+                    if (!localizedName.isEmpty && localizedName == aName) ||
+                       (!bundleName.isEmpty && bundleName == aName) ||
+                       (!execName.isEmpty && execName == aName) {
+                        isExplicitlyAllowed = true
+                        break
+                    }
+                }
+            }
+            
+            // Si es una aplicación regular de usuario no permitida, se bloquea
+            if !isExplicitlyAllowed {
+                isBlocked = true
+            }
+        } else {
+            // MODO LISTA NEGRA: Se bloquean las apps configuradas explícitamente
+            if blockedBundleIds.contains(bundleId) {
+                isBlocked = true
+            }
+            
+            if !isBlocked {
+                for bId in blockedBundleIds {
+                    if bundleId == bId || (bundleId.count > 4 && bundleId.hasPrefix(bId)) {
+                        isBlocked = true
+                        break
+                    }
+                }
+            }
+            
+            if !isBlocked {
+                for name in blockedNames {
+                    if (!localizedName.isEmpty && localizedName == name) ||
+                       (!bundleName.isEmpty && bundleName == name) ||
+                       (!execName.isEmpty && execName == name) {
+                        isBlocked = true
+                        break
+                    }
                 }
             }
         }
         
         if isBlocked {
-            // Terminar instantáneamente
+            // Terminar la aplicación de primer plano bloqueada
             app.forceTerminate()
             
             let displayName = app.localizedName ?? bundleName.capitalized
@@ -189,23 +300,28 @@ public final class AppBlockerService {
             let lastTime = lastInterventionNotificationTimes[appKey] ?? Date.distantPast
             if now.timeIntervalSince(lastTime) > 3.0 {
                 lastInterventionNotificationTimes[appKey] = now
-                sendInterventionNotification(appName: displayName)
+                sendInterventionNotification(appName: displayName, isWhitelist: isWhitelistMode)
             }
         }
     }
     
-    private func sendInterventionNotification(appName: String) {
+    private func sendInterventionNotification(appName: String, isWhitelist: Bool) {
         FocusStatsManager.shared.recordInterception(
             source: appName,
             category: "app",
-            detail: "Aplicación cerrada"
+            detail: isWhitelist ? "No permitida en Bloqueo Total" : "Aplicación cerrada"
         )
         
         SoundService.shared.play("Basso")
         
+        let title = isWhitelist ? "🔒 Bloqueo Total Activo" : "🛑 Aplicación Bloqueada"
+        let msg = isWhitelist
+            ? "'\(appName)' no está en tu Lista Blanca. Solo las herramientas permitidas están habilitadas."
+            : "FocusPanic cerró '\(appName)' para proteger tu atención y enfoque."
+        
         NotificationService.shared.sendNotification(
-            title: "🛑 Aplicación Bloqueada",
-            body: "FocusPanic cerró '\(appName)' para proteger tu atención y enfoque.",
+            title: title,
+            body: msg,
             sound: "Basso"
         )
     }
@@ -241,6 +357,47 @@ public final class AppBlockerService {
                 }
             }
         }
-        return results.sorted { $0.appName.localizedCompare($1.appName) == .orderedAscending }
+        return results.sorted { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending }
+    }
+    
+    /// Verifica si una aplicación está efectivamente instalada en el sistema
+    public static func isAppInstalled(_ app: BlockedApp) -> Bool {
+        if !app.appPath.isEmpty && FileManager.default.fileExists(atPath: app.appPath) {
+            return true
+        }
+        if NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleIdentifier) != nil {
+            return true
+        }
+        
+        let targetClean = app.appName
+            .replacingOccurrences(of: "\u{200E}", with: "")
+            .replacingOccurrences(of: "\u{200F}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        
+        let searchDirs = [
+            "/Applications",
+            "/System/Applications",
+            "/System/Applications/Utilities",
+            "\(NSHomeDirectory())/Applications"
+        ]
+        
+        let fileManager = FileManager.default
+        for dir in searchDirs {
+            guard let contents = try? fileManager.contentsOfDirectory(atPath: dir) else { continue }
+            for item in contents where item.hasSuffix(".app") {
+                let itemClean = item
+                    .replacingOccurrences(of: ".app", with: "")
+                    .replacingOccurrences(of: "\u{200E}", with: "")
+                    .replacingOccurrences(of: "\u{200F}", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                
+                if itemClean == targetClean {
+                    return true
+                }
+            }
+        }
+        return false
     }
 }

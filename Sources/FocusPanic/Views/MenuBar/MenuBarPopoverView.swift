@@ -3,295 +3,239 @@ import SwiftUI
 public struct MenuBarPopoverView: View {
     @ObservedObject var engine = FocusEngine.shared
     @ObservedObject var statsManager = FocusStatsManager.shared
-    @State private var timerRotation: Double = 0
+    @ObservedObject var l10n = LocalizationService.shared
+    @State private var hoveredPresetId: UUID? = nil
     
     public var body: some View {
-        VStack(spacing: 14) {
-            // MARK: - Cabecera Premium
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle()
-                        .fill((engine.sessionStatus == .active ? Color(hex: "#E11D48") : Color(hex: "#10B981")).opacity(0.25))
-                        .frame(width: 14, height: 14)
-                    Circle()
-                        .fill(engine.sessionStatus == .active ? Color(hex: "#E11D48") : Color(hex: "#10B981"))
-                        .frame(width: 8, height: 8)
-                }
-                
-                Text(engine.sessionStatus == .active ? "Sesión Activa" : "FocusPanic")
-                    .font(.system(size: 14, weight: .heavy))
-                
-                // Badge de Racha
-                HStack(spacing: 3) {
-                    Image(systemName: "flame.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(Color(hex: "#F97316"))
-                    Text("\(statsManager.stats.currentStreakDays)d")
-                        .font(.system(size: 10, weight: .heavy))
-                        .foregroundColor(Color(hex: "#F97316"))
-                }
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(Color(hex: "#F97316").opacity(0.15))
-                .cornerRadius(4)
-                
-                if engine.sessionStatus == .active {
-                    Text(engine.settings.blockingMode == .whitelistOnly ? "TOTAL" : "SELECTIVO")
-                        .font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            engine.settings.blockingMode == .whitelistOnly
-                                ? Color(hex: "#10B981").opacity(0.18)
-                                : Color(hex: "#E11D48").opacity(0.18)
-                        )
-                        .foregroundColor(
-                            engine.settings.blockingMode == .whitelistOnly
-                                ? Color(hex: "#10B981")
-                                : Color(hex: "#E11D48")
-                        )
-                        .cornerRadius(4)
-                }
-                
-                Spacer()
-                
-                Button(action: { openAppDashboard() }) {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .padding(5)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Abrir Ventana Principal")
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            
-            Divider()
-            
-            // MARK: - Contenido: Temporizador Dinámico en Movimiento o Selector de Modos
+        VStack(spacing: 10) {
             if engine.sessionStatus == .active {
-                activeAnimatedTimerView
+                // MARK: - Estado Activo (Estilo Reproductor Nativo de Apple)
+                activeNowPlayingCard
             } else {
-                idleModeLauncherView
+                // MARK: - Estado Reposo (Estilo Centro de Control de Apple)
+                idleControlCenterCard
             }
-            
-            Divider()
-            
-            // MARK: - Barra Inferior con Ajustes Directos
-            HStack {
-                Button(action: { openAppSettings() }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 11))
-                        Text("Ajustes")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                    }
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 6)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                Button(action: { openAppDashboard() }) {
-                    Text("Abrir Dashboard")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundColor(.accentColor)
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 10)
-                        .background(Color.accentColor.opacity(0.12))
-                        .cornerRadius(6)
-                }
-                .buttonStyle(.plain)
-                
-                Spacer()
-                
-                Menu {
-                    Button("Ocultar este menú") {
-                        closePopover()
-                    }
-                    
-                    if engine.sessionStatus == .active {
-                        Divider()
-                        if engine.settings.isMasterPasswordEnabled {
-                            Button("Desbloquear con Clave...") {
-                                openAppEmergencyUnlock()
-                            }
-                        } else {
-                            Button("Detener Modo Enfoque") {
-                                engine.endSession(didCompleteNormally: false)
-                            }
-                        }
-                    }
-                    
-                    Divider()
-                    
-                    Button(role: .destructive, action: {
-                        quitApplication()
-                    }) {
-                        Text("Cerrar FocusPanic (Salir)")
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.system(size: 12))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8))
-                    }
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 6)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 12)
         }
-        .frame(width: 310)
-        .background(VisualEffectBackground())
+        .padding(12)
+        .frame(width: 360)
+        .background(VisualEffectBackground(cornerRadius: 20))
     }
     
-    // MARK: - Temporizador Animado en Movimiento
-    private var activeAnimatedTimerView: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                // Anillo de fondo
-                Circle()
-                    .stroke(Color.secondary.opacity(0.12), lineWidth: 9)
-                    .frame(width: 130, height: 130)
-                
-                // Anillo de progreso dinámico
-                Circle()
-                    .trim(from: 0.0, to: CGFloat(engine.progress))
-                    .stroke(
-                        AngularGradient(
-                            gradient: Gradient(colors: [
-                                engine.settings.blockingMode == .whitelistOnly ? Color(hex: "#10B981") : Color(red: 1.0, green: 0.25, blue: 0.4),
-                                engine.settings.blockingMode == .whitelistOnly ? Color(hex: "#059669") : Color(red: 0.9, green: 0.1, blue: 0.3)
-                            ]),
-                            center: .center
-                        ),
-                        style: StrokeStyle(lineWidth: 9, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 130, height: 130)
-                    .shadow(
-                        color: (engine.settings.blockingMode == .whitelistOnly ? Color.green : Color.red).opacity(0.4),
-                        radius: 8,
-                        x: 0,
-                        y: 0
-                    )
-                
-                // Efecto de pulso / brillo continuo
-                Circle()
-                    .trim(from: 0, to: 0.15)
-                    .stroke(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                    .rotationEffect(.degrees(timerRotation))
-                    .frame(width: 130, height: 130)
-                
-                // Números del temporizador en tiempo real
-                VStack(spacing: 2) {
-                    Text(engine.formattedRemainingTime)
-                        .font(.system(size: 28, weight: .heavy, design: .monospaced))
-                        .foregroundColor(.primary)
-                    
-                    Text(engine.currentSession?.presetName ?? "Enfoque")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            .padding(.top, 6)
-            .onAppear {
-                withAnimation(.linear(duration: 4.0).repeatForever(autoreverses: false)) {
-                    timerRotation = 360
-                }
-            }
-            
-            // Botón de Desbloqueo / Detener según configuración
-            Group {
-                if engine.settings.isMasterPasswordEnabled {
-                    Button(action: {
-                        openAppEmergencyUnlock()
-                    }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "key.fill")
-                                .font(.caption)
-                            Text("Desbloquear con Clave")
-                                .font(.caption)
-                                .fontWeight(.bold)
-                        }
-                        .foregroundColor(.white)
-                        .padding(.vertical, 7)
-                        .padding(.horizontal, 16)
-                        .background(
+    // MARK: - Tarjeta Activa (100% estilo Apple Music / Now Playing)
+    private var activeNowPlayingCard: some View {
+        VStack(spacing: 12) {
+            // Fila Principal con Carátula, Info y Controles
+            HStack(spacing: 14) {
+                // Carátula tipo Album Art
+                ZStack(alignment: .bottomTrailing) {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
                             LinearGradient(
-                                colors: [Color(red: 0.95, green: 0.25, blue: 0.35), Color(red: 0.85, green: 0.15, blue: 0.45)],
-                                startPoint: .leading,
-                                endPoint: .trailing
+                                colors: [Color(hex: "#E11D48"), Color(hex: "#9F1239")],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
                             )
                         )
-                        .cornerRadius(8)
-                        .shadow(color: Color.red.opacity(0.25), radius: 6, x: 0, y: 3)
+                        .frame(width: 52, height: 52)
+                        .shadow(color: Color.black.opacity(0.3), radius: 4, y: 2)
+                    
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    
+                    // Mini badge de modo
+                    Circle()
+                        .fill(engine.settings.blockingMode == .whitelistOnly ? Color(hex: "#10B981") : Color(hex: "#E11D48"))
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1.5))
+                        .offset(x: 2, y: 2)
+                }
+                .frame(width: 52, height: 52)
+                
+                // Título y Contador
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(engine.currentSession?.presetName ?? "Sesión de Enfoque")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    
+                    HStack(spacing: 6) {
+                        Text(engine.formattedRemainingTime)
+                            .font(.system(size: 16, weight: .heavy, design: .monospaced))
+                            .foregroundColor(Color(hex: "#FB7185"))
+                        
+                        Text("• \(engine.settings.blockingMode == .whitelistOnly ? "Bloqueo Total" : "Selectivo")")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                
+                Spacer()
+                
+                // Controles de Reproducción / Detención
+                HStack(spacing: 8) {
+                    if engine.settings.isMasterPasswordEnabled {
+                        Button(action: { openAppEmergencyUnlock() }) {
+                            Image(systemName: "key.fill")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 34, height: 34)
+                                .background(Color.white.opacity(0.12))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Desbloquear con Clave")
+                    } else {
+                        Button(action: {
+                            withAnimation {
+                                engine.endSession(didCompleteNormally: false)
+                            }
+                        }) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 34, height: 34)
+                                .background(Color.white.opacity(0.12))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Detener Sesión")
+                    }
+                    
+                    Button(action: { openAppDashboard() }) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(width: 28, height: 28)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                } else {
-                    Button(action: {
-                        withAnimation {
-                            engine.endSession(didCompleteNormally: false)
-                        }
-                    }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "stop.circle.fill")
-                                .font(.caption)
-                            Text("Detener Sesión")
-                                .font(.caption)
-                                .fontWeight(.bold)
-                        }
+                    .help("Abrir Dashboard")
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.08))
+            .cornerRadius(16)
+            
+            // Barra de Progreso
+            VStack(spacing: 4) {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.15))
+                            .frame(height: 4)
+                        
+                        Capsule()
+                            .fill(Color.white)
+                            .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(engine.progress))), height: 4)
+                    }
+                }
+                .frame(height: 4)
+                
+                HStack {
+                    Text("\(Int(engine.progress * 100))% completado")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                    Spacer()
+                    Text("FocusPanic")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+    }
+    
+    // MARK: - Tarjeta en Reposo (Estilo Centro de Control de macOS)
+    private var idleControlCenterCard: some View {
+        VStack(spacing: 10) {
+            // Header del Widget
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(hex: "#10B981"), Color(hex: "#047857")],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 38, height: 38)
+                    
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
-                        .padding(.vertical, 7)
-                        .padding(.horizontal, 16)
-                        .background(Color(hex: "#F43F5E"))
+                }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("FocusPanic")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                    
+                    let tier = statsManager.currentTier
+                    HStack(spacing: 4) {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(Color(hex: tier.colorHex))
+                        Text("\(L10n.tr("popover.streak")) \(statsManager.stats.currentStreakDays) \(L10n.tr("dash.stats.days")) • \(L10n.tr("popover.level")) \(tier.level)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                }
+                
+                Spacer()
+                
+                HStack(spacing: 6) {
+                    Button(action: {
+                        closePopover()
+                        engine.relaunchApp()
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(0.8))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                    .help(LocalizationService.shared.currentLanguage == .english ? "Restart FocusPanic" : "Reiniciar FocusPanic")
+                    
+                    Button(action: { openAppDashboard() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "macwindow")
+                                .font(.system(size: 10))
+                            Text(L10n.tr("popover.dashboard"))
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.1))
                         .cornerRadius(8)
-                        .shadow(color: Color.red.opacity(0.25), radius: 6, x: 0, y: 3)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.bottom, 2)
-        }
-        .padding(.vertical, 6)
-    }
-    
-    // MARK: - Vista de Presets de Concentración (Sin Selector Redundante)
-    private var idleModeLauncherView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Iniciar Sesión de Concentración:")
-                .font(.caption)
-                .fontWeight(.bold)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
+            .padding(10)
+            .background(Color.white.opacity(0.06))
+            .cornerRadius(14)
             
-            VStack(spacing: 6) {
-                ForEach(FocusPreset.defaultPresets) { preset in
-                    let isTotal = preset.name == "Bloqueo Total"
+            // Grid 2x2 de Presets (Diseño Apple Control Center)
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                ForEach(FocusPreset.defaultPresets.prefix(4)) { preset in
+                    let isHovered = hoveredPresetId == preset.id
                     Button(action: {
                         engine.startFocusSession(durationMinutes: preset.durationMinutes, presetName: preset.name)
                         closePopover()
                     }) {
-                        HStack(spacing: 10) {
+                        HStack(spacing: 8) {
                             ZStack {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color(hex: preset.colorHex).opacity(isTotal ? 0.25 : 0.15))
-                                    .frame(width: 26, height: 26)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color(hex: preset.colorHex).opacity(0.2))
+                                    .frame(width: 28, height: 28)
                                 Image(systemName: preset.iconName)
                                     .font(.system(size: 12, weight: .bold))
                                     .foregroundColor(Color(hex: preset.colorHex))
@@ -299,97 +243,93 @@ public struct MenuBarPopoverView: View {
                             
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(preset.name)
-                                    .font(.subheadline)
-                                    .fontWeight(isTotal ? .bold : .medium)
-                                    .foregroundColor(isTotal ? Color(hex: "#10B981") : .primary)
-                                Text(preset.subtitle)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
+                                    .font(.system(size: 11.5, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                
+                                Text("\(preset.durationMinutes) min")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.6))
                             }
                             
-                            Spacer()
-                            
-                            Text("\(preset.durationMinutes) min")
-                                .font(.caption2)
-                                .fontWeight(.bold)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(Color(hex: preset.colorHex).opacity(0.12))
-                                .cornerRadius(5)
-                                .foregroundColor(Color(hex: preset.colorHex))
+                            Spacer(minLength: 0)
                         }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
-                        .background(isTotal ? Color(hex: "#10B981").opacity(0.08) : Color.secondary.opacity(0.05))
+                        .padding(8)
+                        .background(isHovered ? Color.white.opacity(0.14) : Color.white.opacity(0.06))
+                        .cornerRadius(12)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(isTotal ? Color(hex: "#10B981").opacity(0.3) : Color.clear, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(isHovered ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
                         )
-                        .cornerRadius(8)
                     }
                     .buttonStyle(.plain)
+                    .onHover { h in
+                        hoveredPresetId = h ? preset.id : nil
+                    }
                 }
             }
-            .padding(.horizontal, 14)
+            
+            // Modo de Emergencia / Bloqueo Total
+            if let totalPreset = FocusPreset.defaultPresets.first(where: { $0.name == "Bloqueo Total" }) {
+                let isHovered = hoveredPresetId == totalPreset.id
+                Button(action: {
+                    engine.startFocusSession(durationMinutes: totalPreset.durationMinutes, presetName: totalPreset.name)
+                    closePopover()
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: totalPreset.iconName)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(Color(hex: totalPreset.colorHex))
+                        
+                        Text(totalPreset.name)
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        Spacer()
+                        
+                        Text("\(totalPreset.durationMinutes) min • Emergencia")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Color(hex: totalPreset.colorHex))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(isHovered ? Color(hex: "#10B981").opacity(0.2) : Color.white.opacity(0.05))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color(hex: "#10B981").opacity(0.3), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .onHover { h in
+                    hoveredPresetId = h ? totalPreset.id : nil
+                }
+            }
         }
     }
     
     private func closePopover() {
-        AppDelegate.shared?.closePopover()
+        let delegate = AppDelegate.shared ?? (NSApp.delegate as? AppDelegate)
+        delegate?.closePopover()
     }
     
     private func openAppDashboard() {
         closePopover()
-        NSApp.activate(ignoringOtherApps: true)
-        AppDelegate.shared?.openMainWindow()
+        let delegate = AppDelegate.shared ?? (NSApp.delegate as? AppDelegate)
+        delegate?.openMainWindow()
     }
     
     private func openAppSettings() {
         closePopover()
-        NSApp.activate(ignoringOtherApps: true)
-        AppDelegate.shared?.openMainWindow()
+        let delegate = AppDelegate.shared ?? (NSApp.delegate as? AppDelegate)
+        delegate?.openMainWindow()
         engine.isSettingsPresented = true
     }
     
     private func openAppEmergencyUnlock() {
         closePopover()
-        NSApp.activate(ignoringOtherApps: true)
-        AppDelegate.shared?.openMainWindow()
+        let delegate = AppDelegate.shared ?? (NSApp.delegate as? AppDelegate)
+        delegate?.openMainWindow()
         engine.initiateEmergencyUnlock()
-    }
-    
-    private func quitApplication() {
-        closePopover()
-        if engine.settings.isMasterPasswordEnabled && !engine.settings.masterCompanionPassword.isEmpty {
-            let alert = NSAlert()
-            alert.messageText = "FocusPanic Protegido"
-            alert.informativeText = "No está permitido cerrar FocusPanic para evitar burlar los bloqueos. Tu compañero debe autorizar el cierre con su PIN."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Ingresar Clave del Compañero")
-            alert.addButton(withTitle: "Cancelar")
-            let res = alert.runModal()
-            if res == .alertFirstButtonReturn {
-                openAppEmergencyUnlock()
-            }
-            return
-        }
-        
-        if engine.sessionStatus == .active {
-            let alert = NSAlert()
-            alert.messageText = "¿Detener sesión y salir?"
-            alert.informativeText = "Al salir de FocusPanic se desactivará el temporizador y se desbloquearán las distracciones."
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "Detener y Salir")
-            alert.addButton(withTitle: "Seguir Enfocado")
-            let res = alert.runModal()
-            if res == .alertFirstButtonReturn {
-                engine.endSession(didCompleteNormally: false)
-                NSApplication.shared.terminate(nil)
-            }
-            return
-        }
-        NSApplication.shared.terminate(nil)
     }
 }

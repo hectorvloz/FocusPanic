@@ -17,30 +17,30 @@ public struct StatsDashboardView: View {
             .ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // Header Bar
+                // Header Bar de Bienestar Digital
                 HStack(spacing: 12) {
                     ZStack {
                         Circle()
                             .fill(LinearGradient(
-                                colors: [Color(hex: "#F97316"), Color(hex: "#EF4444")],
+                                colors: [Color(hex: "#3B82F6"), Color(hex: "#8B5CF6")],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ))
                             .frame(width: 40, height: 40)
-                            .shadow(color: Color(hex: "#F97316").opacity(0.5), radius: 10, x: 0, y: 3)
+                            .shadow(color: Color(hex: "#3B82F6").opacity(0.5), radius: 10, x: 0, y: 3)
                         
-                        Image(systemName: "flame.fill")
+                        Image(systemName: "chart.pie.fill")
                             .foregroundColor(.white)
                             .font(.system(size: 20, weight: .bold))
                     }
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Racha & Dopamina Positiva")
+                        Text("Bienestar Digital & Estadísticas")
                             .font(.title2)
                             .fontWeight(.heavy)
                             .foregroundColor(.white)
                         
-                        Text("Métricas de concentración, tiempo en redes sociales y registro de impulsos salvados")
+                        Text("Monitoreo en tiempo real de tiempo en redes sociales, apps y páginas interceptadas")
                             .font(.caption)
                             .foregroundColor(Color(hex: "#94A3B8"))
                     }
@@ -56,13 +56,13 @@ public struct StatsDashboardView: View {
                 
                 ScrollView {
                     VStack(spacing: 22) {
-                        // 1. Banner Principal de Racha de Fuego
-                        streakHeroCard
+                        // 1. Gráfica de Dona Estilo Bienestar Digital de Android
+                        digitalWellbeingDonutCard
                         
-                        // 2. Grid de 4 Métricas Clave (Tiempo Ganado vs Tiempo en Redes)
+                        // 2. Grid de 4 Métricas Clave de Tiempo y Pantalla
                         metricsGrid
                         
-                        // 3. Monitor de Tiempo & Visitas en Redes Sociales 24/7
+                        // 3. Monitor Detallado de Tiempo & Visitas en Redes Sociales 24/7
                         socialScreenTimeCard
                         
                         // 4. Gráfico Semanal de Productividad
@@ -99,152 +99,233 @@ public struct StatsDashboardView: View {
         .frame(minWidth: 780, minHeight: 640)
     }
     
-    // MARK: - 1. Hero Card de Racha
-    private var streakHeroCard: some View {
-        HStack(spacing: 20) {
-            ZStack {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [Color(hex: "#F97316").opacity(0.35), Color.clear],
-                            center: .center,
-                            startRadius: 10,
-                            endRadius: 50
-                        )
-                    )
-                    .frame(width: 90, height: 90)
-                
-                Circle()
-                    .fill(Color(hex: "#F97316").opacity(0.2))
-                    .frame(width: 72, height: 72)
-                    .overlay(
-                        Circle()
-                            .stroke(Color(hex: "#F97316").opacity(0.6), lineWidth: 2)
-                    )
-                
-                Text("\(statsManager.stats.currentStreakDays)")
-                    .font(.system(size: 36, weight: .heavy, design: .rounded))
-                    .foregroundColor(Color(hex: "#F97316"))
-            }
-            
-            VStack(alignment: .leading, spacing: 5) {
+    // MARK: - 1. Gráfica de Dona Estilo Bienestar Digital (Android Style - Centrada)
+    private var digitalWellbeingDonutCard: some View {
+        let socialList = statsManager.todaySocialUsageList
+        let totalSeconds = statsManager.totalSocialTimeTodayMinutes * 60 + socialList.reduce(0) { $0 + ($1.seconds % 60) }
+        let totalTimeDisplay = formatTotalTime(totalSeconds)
+        
+        return VStack(spacing: 24) {
+            // Cabecera de la Tarjeta
+            HStack {
                 HStack(spacing: 8) {
-                    Text("RACHA DE DISCIPLINA")
-                        .font(.caption2)
-                        .fontWeight(.heavy)
-                        .tracking(1.2)
-                        .foregroundColor(Color(hex: "#F97316"))
-                    
-                    if statsManager.stats.currentStreakDays >= 3 {
-                        Text("🔥 IMPARABLE")
-                            .font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color(hex: "#F97316").opacity(0.2))
-                            .foregroundColor(Color(hex: "#F97316"))
-                            .cornerRadius(4)
-                    }
-                }
-                
-                Text(statsManager.stats.currentStreakDays == 1
-                     ? "1 Día Enfocado Consecutivo"
-                     : "\(statsManager.stats.currentStreakDays) Días Enfocados Consecutivos")
-                    .font(.title3)
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
-                
-                Text(statsManager.stats.currentStreakDays == 0
-                     ? "Inicia tu primera sesión hoy para encender tu llama de disciplina."
-                     : "Récord histórico: \(statsManager.stats.bestStreakDays) días. Tu cerebro está reforzando el circuito del enfoque.")
-                    .font(.caption)
-                    .foregroundColor(Color(hex: "#94A3B8"))
-            }
-            
-            Spacer()
-            
-            // Medidor Circular de Meta Diaria
-            let target = statsManager.stats.dailyTargetMinutes
-            let todayMins = statsManager.todayFocusMinutes
-            let progress = min(1.0, Double(todayMins) / Double(max(1, target)))
-            
-            VStack(spacing: 6) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.white.opacity(0.1), lineWidth: 6)
-                        .frame(width: 58, height: 58)
-                    
-                    Circle()
-                        .trim(from: 0, to: CGFloat(progress))
-                        .stroke(
-                            LinearGradient(
-                                colors: [Color(hex: "#10B981"), Color(hex: "#34D399")],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            style: StrokeStyle(lineWidth: 6, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 58, height: 58)
-                    
-                    Text("\(Int(progress * 100))%")
-                        .font(.system(size: 13, weight: .bold))
+                    Image(systemName: "circle.circle.fill")
+                        .foregroundColor(Color(hex: "#3B82F6"))
+                        .font(.headline)
+                    Text("Bienestar Digital • Tiempo en Redes Sociales")
+                        .font(.headline)
+                        .fontWeight(.bold)
                         .foregroundColor(.white)
                 }
-                
-                Text("Meta Diaria")
+                Spacer()
+                Text("Monitoreo 24/7")
                     .font(.caption2)
                     .fontWeight(.semibold)
-                    .foregroundColor(Color(hex: "#94A3B8"))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color(hex: "#3B82F6").opacity(0.2))
+                    .foregroundColor(Color(hex: "#60A5FA"))
+                    .cornerRadius(6)
             }
-            .padding(.trailing, 10)
+            
+            // DONUT CHART CENTRADO (ESTILO GOOGLE ANDROID)
+            ZStack {
+                if socialList.isEmpty || totalSeconds == 0 {
+                    // Anillo vacío limpio
+                    Circle()
+                        .stroke(Color.white.opacity(0.08), lineWidth: 22)
+                        .frame(width: 210, height: 210)
+                } else {
+                    // Fondo base del anillo
+                    Circle()
+                        .stroke(Color.white.opacity(0.06), lineWidth: 22)
+                        .frame(width: 210, height: 210)
+                    
+                    // Segmentos de color con separación estilo Android
+                    donutSegmentsView(items: socialList, totalSeconds: totalSeconds)
+                        .frame(width: 210, height: 210)
+                }
+                
+                // Texto Central de Tiempo
+                VStack(spacing: 4) {
+                    Text("HOY")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundColor(Color(hex: "#94A3B8"))
+                        .tracking(1.5)
+                    
+                    Text(totalTimeDisplay)
+                        .font(.system(size: 30, weight: .heavy, design: .rounded))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                    
+                    if totalSeconds > 0 {
+                        Text("\(statsManager.totalSocialVisitsToday) \(statsManager.totalSocialVisitsToday == 1 ? "visita" : "visitas")")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(Color(hex: "#A855F7"))
+                    } else {
+                        Text("¡Día limpio!")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(Color(hex: "#10B981"))
+                    }
+                }
+            }
+            .frame(width: 240, height: 240)
+            .padding(.vertical, 4)
+            
+            // LEYENDA CENTRADA (CHIPS DE APLICACIONES CON COLORES)
+            if socialList.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundColor(Color(hex: "#10B981"))
+                    Text("0 minutos en redes sociales hoy. ¡Excelente control de atención!")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(Color(hex: "#94A3B8"))
+                }
+                .padding(.vertical, 4)
+            } else {
+                // Fila de Chips Centrados
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 10)], spacing: 10) {
+                    ForEach(socialList, id: \.source) { item in
+                        let fraction = Double(item.seconds) / Double(max(1, totalSeconds))
+                        let percentage = Int(round(fraction * 100))
+                        
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(socialColor(for: item.source))
+                                .frame(width: 10, height: 10)
+                            
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.source)
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                
+                                HStack(spacing: 4) {
+                                    Text(formatSeconds(item.seconds))
+                                        .font(.system(size: 10, weight: .heavy))
+                                        .foregroundColor(socialColor(for: item.source))
+                                    
+                                    Text("(\(percentage)%)")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(Color(hex: "#94A3B8"))
+                                }
+                            }
+                            
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.white.opacity(0.05))
+                        .cornerRadius(10)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(socialColor(for: item.source).opacity(0.3), lineWidth: 1)
+                        )
+                    }
+                }
+                .frame(maxWidth: 580)
+            }
         }
-        .padding(20)
+        .padding(24)
+        .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(hex: "#1E2235").opacity(0.7))
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(hex: "#181B28").opacity(0.85))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color(hex: "#F97316").opacity(0.3), lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color(hex: "#3B82F6").opacity(0.3), lineWidth: 1.5)
                 )
         )
+    }
+    
+    private struct DonutSlice: Identifiable {
+        let id = UUID()
+        let source: String
+        let color: Color
+        let start: Double
+        let end: Double
+    }
+    
+    private func donutSegmentsView(items: [(source: String, visits: Int, minutes: Int, seconds: Int)], totalSeconds: Int) -> some View {
+        let validItems = items.filter { $0.seconds > 0 }
+        
+        var slices: [DonutSlice] = []
+        var accum: Double = 0.0
+        
+        if totalSeconds > 0 && !validItems.isEmpty {
+            for item in validItems {
+                let fraction = Double(item.seconds) / Double(totalSeconds)
+                let start = accum
+                let end = accum + fraction
+                slices.append(DonutSlice(source: item.source, color: socialColor(for: item.source), start: start, end: end))
+                accum = end
+            }
+        }
+        
+        return ZStack {
+            // Anillo base sutil de fondo
+            Circle()
+                .stroke(Color.white.opacity(0.08), style: StrokeStyle(lineWidth: 22, lineCap: .round))
+            
+            // Segmentos continuos y limpios sin cortes negros
+            ForEach(slices) { slice in
+                Circle()
+                    .trim(from: CGFloat(slice.start), to: CGFloat(slice.end))
+                    .stroke(slice.color, style: StrokeStyle(lineWidth: 22, lineCap: .butt))
+                    .rotationEffect(.degrees(-90))
+            }
+        }
+    }
+    
+    private func formatTotalTime(_ secs: Int) -> String {
+        if secs == 0 { return "0 min" }
+        if secs < 60 { return "\(secs) seg" }
+        let mins = secs / 60
+        if mins < 60 { return "\(mins) min" }
+        let hours = mins / 60
+        let remMins = mins % 60
+        return remMins == 0 ? "\(hours) h" : "\(hours)h \(remMins)m"
     }
     
     // MARK: - 2. Grid de 4 Métricas Clave
     private var metricsGrid: some View {
         HStack(spacing: 14) {
-            let totalHours = Double(statsManager.stats.totalFocusMinutesAllTime) / 60.0
-            metricCard(
-                icon: "timer",
-                color: Color(hex: "#38BDF8"),
-                value: String(format: "%.1f h", totalHours),
-                title: "Tiempo Ganado",
-                subtitle: "\(statsManager.todayFocusMinutes) min hoy"
-            )
-            
             let socialMins = statsManager.totalSocialTimeTodayMinutes
             let socialTimeFormatted = socialMins >= 60 ? "\(socialMins / 60)h \(socialMins % 60)m" : "\(socialMins) min"
             metricCard(
                 icon: "hourglass.badge.eye",
-                color: Color(hex: "#A855F7"),
+                color: Color(hex: "#3B82F6"),
                 value: socialTimeFormatted,
                 title: "Tiempo en Redes Hoy",
-                subtitle: "\(statsManager.totalSocialVisitsToday) visitas 24/7"
+                subtitle: "\(statsManager.totalSocialVisitsToday) visitas registradas"
+            )
+            
+            metricCard(
+                icon: "eye.fill",
+                color: Color(hex: "#A855F7"),
+                value: "\(statsManager.totalSocialVisitsToday)",
+                title: "Aperturas de Apps",
+                subtitle: "Visitas pasivas 24/7"
             )
             
             metricCard(
                 icon: "shield.lefthalf.filled.badge.checkmark",
                 color: Color(hex: "#F43F5E"),
                 value: "\(statsManager.todayInterceptionsCount)",
-                title: "Impulsos Salvados",
-                subtitle: "\(statsManager.stats.totalInterceptionsAllTime) históricos"
+                title: "Impulsos Evitados",
+                subtitle: "\(statsManager.stats.totalInterceptionsAllTime) bloqueos totales"
             )
             
+            let focusMins = statsManager.todayFocusMinutes
+            let focusFormatted = focusMins >= 60 ? String(format: "%.1f h", Double(focusMins) / 60.0) : "\(focusMins) min"
             metricCard(
-                icon: "trophy.fill",
-                color: Color(hex: "#FBBF24"),
-                value: "\(statsManager.stats.bestStreakDays) d",
-                title: "Mejor Racha",
-                subtitle: "Días seguidos"
+                icon: "timer",
+                color: Color(hex: "#10B981"),
+                value: focusFormatted,
+                title: "Tiempo Enfocado",
+                subtitle: "Sesiones de hoy"
             )
         }
     }
@@ -590,9 +671,20 @@ public struct StatsDashboardView: View {
     // MARK: - 6. Línea de Tiempo de Intercepciones Recientes
     private var recentActivityLogCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Registro en Vivo de Impulsos Interceptados", systemImage: "clock.arrow.circlepath")
-                .font(.headline)
-                .foregroundColor(.white)
+            HStack {
+                Label("Registro en Vivo de Impulsos Interceptados", systemImage: "clock.arrow.circlepath")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                let recents = statsManager.stats.recentInterceptions
+                if !recents.isEmpty {
+                    Text("\(recents.count) totales")
+                        .font(.caption2)
+                        .foregroundColor(Color(hex: "#64748B"))
+                }
+            }
             
             let recents = statsManager.stats.recentInterceptions
             if recents.isEmpty {
@@ -602,16 +694,40 @@ public struct StatsDashboardView: View {
                     .padding(.vertical, 8)
             } else {
                 VStack(spacing: 8) {
-                    ForEach(recents.prefix(5)) { item in
+                    ForEach(recents.prefix(8)) { item in
                         HStack(spacing: 10) {
-                            Circle()
-                                .fill(Color(hex: "#F43F5E"))
-                                .frame(width: 7, height: 7)
+                            // Icono contextual por categoría y detalle
+                            let iconConfig = iconConfigForSource(item.source, detail: item.detail)
+                            ZStack {
+                                Circle()
+                                    .fill(iconConfig.color.opacity(0.15))
+                                    .frame(width: 24, height: 24)
+                                Image(systemName: iconConfig.icon)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(iconConfig.color)
+                            }
                             
-                            Text(item.source)
-                                .font(.caption)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(item.source)
+                                        .font(.caption)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.white)
+                                    
+                                    if !item.detail.isEmpty && item.detail.lowercased() != item.source.lowercased() {
+                                        Text(item.detail)
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 4)
+                                                    .fill(iconConfig.color.opacity(0.15))
+                                            )
+                                            .foregroundColor(iconConfig.color)
+                                            .lineLimit(1)
+                                    }
+                                }
+                            }
                             
                             Spacer()
                             
@@ -621,7 +737,7 @@ public struct StatsDashboardView: View {
                         }
                         .padding(.vertical, 4)
                         
-                        if item.id != recents.prefix(5).last?.id {
+                        if item.id != recents.prefix(8).last?.id {
                             Divider().background(Color.white.opacity(0.05))
                         }
                     }
@@ -637,6 +753,23 @@ public struct StatsDashboardView: View {
                         .stroke(Color.white.opacity(0.08), lineWidth: 1)
                 )
         )
+    }
+    
+    private func iconConfigForSource(_ source: String, detail: String = "") -> (icon: String, color: Color) {
+        let combined = (source + " " + detail).lowercased()
+        if combined.contains("búsqueda") || combined.contains("busqueda") || combined.contains("palabra") {
+            return ("text.magnifyingglass", Color(hex: "#F59E0B"))
+        } else if combined.contains("whatsapp") {
+            return ("circle.dashed.inset.filled", Color(hex: "#25D366"))
+        } else if combined.contains("incógnito") || combined.contains("incognito") {
+            return ("eyeglasses", Color(hex: "#8B5CF6"))
+        } else if combined.contains("adulto") || combined.contains("+18") || combined.contains("porn") || combined.contains("terabox") {
+            return ("hand.raised.fill", Color(hex: "#F43F5E"))
+        } else if combined.contains("claude") || combined.contains("chatgpt") || combined.contains("gemini") {
+            return ("sparkles", Color(hex: "#38BDF8"))
+        } else {
+            return ("shield.slash.fill", Color(hex: "#F43F5E"))
+        }
     }
     
     private func timeAgo(date: Date) -> String {

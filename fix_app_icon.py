@@ -1,48 +1,54 @@
 import os
 import shutil
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 def generate_macos_standard_icon():
-    source_path = "Resources/AppIcon.png"
-    if not os.path.exists(source_path):
-        print(f"Error: {source_path} no existe")
-        return
+    src_path = "/Users/hector/.gemini/antigravity-ide/brain/a575d413-2d6a-439e-b975-5ed628ec5726/focuspanic_app_icon_1787777162781.jpg"
+    if not os.path.exists(src_path):
+        src_path = "Resources/AppIcon.png"
     
-    # Abrir la imagen original
-    img = Image.open(source_path).convert("RGBA")
+    img = Image.open(src_path).convert("RGBA")
     
-    # Si la imagen ya tiene contenido en un canvas completo, vamos a recortar al contenido real si es necesario
-    # o escalarlo directamente al estándar de macOS (824x824 dentro de 1024x1024)
-    target_canvas_size = 1024
-    target_squircle_size = 824
+    # 1. Recortar exactamente la tarjeta squircle con su fondo oscuro original y su logo brillante
+    crop_box = (158, 158, 866, 866)
+    squircle_img = img.crop(crop_box)
     
-    # Redimensionar el icono a 824x824 con alta calidad
-    squircle_img = img.resize((target_squircle_size, target_squircle_size), Image.Resampling.LANCZOS)
+    # 2. Redimensionar al estándar de macOS: 824x824
+    target_size = 824
+    squircle_resized = squircle_img.resize((target_size, target_size), Image.Resampling.LANCZOS)
     
-    # Crear canvas final de 1024x1024 transparente
-    canvas = Image.new("RGBA", (target_canvas_size, target_canvas_size), (0, 0, 0, 0))
+    # 3. Crear máscara Squircle oficial de Apple con 4x supersampling para bordes ultra suaves
+    scale = 4
+    mask_size = target_size * scale
+    mask = Image.new("L", (mask_size, mask_size), 0)
+    draw = ImageDraw.Draw(mask)
+    corner_radius = int(185 * scale)
+    draw.rounded_rectangle([0, 0, mask_size, mask_size], radius=corner_radius, fill=255)
+    mask = mask.resize((target_size, target_size), Image.Resampling.LANCZOS)
     
-    # Calcular posición centrada
-    offset_x = (target_canvas_size - target_squircle_size) // 2 # 100 px
-    offset_y = (target_canvas_size - target_squircle_size) // 2 + 4 # 104 px (ligero desplazamiento vertical típico de macOS)
+    # 4. Aplicar la máscara (conserva 100% el fondo oscuro y el logo original por dentro, y hace transparentes solo las esquinas exteriores)
+    squircle_final = Image.new("RGBA", (target_size, target_size), (0, 0, 0, 0))
+    squircle_final.paste(squircle_resized, (0, 0), mask)
     
-    # Crear sombra suave nativa de macOS
-    shadow_mask = squircle_img.split()[3]
-    shadow_layer = Image.new("RGBA", (target_canvas_size, target_canvas_size), (0, 0, 0, 0))
+    # 5. Canvas transparente 1024x1024 con sombra nativa de macOS
+    canvas = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    offset_x = (1024 - target_size) // 2 # 100
+    offset_y = (1024 - target_size) // 2 + 6 # 106
     
-    shadow_color = Image.new("RGBA", (target_squircle_size, target_squircle_size), (0, 0, 0, 60))
-    shadow_layer.paste(shadow_color, (offset_x, offset_y + 10), shadow_mask)
-    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=16))
+    # Sombra suave de macOS
+    shadow_layer = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    shadow_color = Image.new("RGBA", (target_size, target_size), (0, 0, 0, 95))
+    shadow_layer.paste(shadow_color, (offset_x, offset_y + 14), mask)
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=20))
     
-    # Componer sombra y squircle
     canvas.paste(shadow_layer, (0, 0), shadow_layer)
-    canvas.paste(squircle_img, (offset_x, offset_y), squircle_img)
+    canvas.paste(squircle_final, (offset_x, offset_y), squircle_final)
     
-    # Guardar la nueva AppIcon.png estandarizada
+    os.makedirs("Resources", exist_ok=True)
     canvas.save("Resources/AppIcon.png", format="PNG", optimize=True)
-    print("✅ Resources/AppIcon.png estandarizada a la cuadrícula oficial de macOS (824px en canvas 1024px)")
+    print("✅ Resources/AppIcon.png generado exactamente con el fondo oscuro original y el logo minimalista")
     
-    # Generar el iconset
+    # 6. Generar .iconset y .icns
     iconset_dir = "Resources/AppIcon.iconset"
     if os.path.exists(iconset_dir):
         shutil.rmtree(iconset_dir)
@@ -65,7 +71,6 @@ def generate_macos_standard_icon():
         resized = canvas.resize((size, size), Image.Resampling.LANCZOS)
         resized.save(os.path.join(iconset_dir, filename), format="PNG", optimize=True)
     
-    # Generar el archivo .icns usando iconutil
     os.system(f"iconutil -c icns {iconset_dir} -o Resources/AppIcon.icns")
     print("✅ Resources/AppIcon.icns generado con éxito")
 

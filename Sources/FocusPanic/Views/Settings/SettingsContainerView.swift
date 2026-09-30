@@ -1,21 +1,63 @@
 import SwiftUI
 
+public enum SettingsGroup: String, CaseIterable {
+    case blocking = "REGLAS DE BLOQUEO"
+    case screenTime = "HORARIOS & TIEMPO"
+    case system = "SEGURIDAD & AJUSTES"
+    
+    public var localizedTitle: String {
+        switch self {
+        case .blocking: return L10n.tr("settings.group.blocking")
+        case .screenTime: return L10n.tr("settings.group.screenTime")
+        case .system: return L10n.tr("settings.group.system")
+        }
+    }
+    
+    public var sections: [SettingsSection] {
+        switch self {
+        case .blocking:
+            return [.websites, .apps, .permanent]
+        case .screenTime:
+            return [.downtime, .appLimits, .whitelist]
+        case .system:
+            return [.emergency, .general]
+        }
+    }
+}
+
 public enum SettingsSection: String, CaseIterable, Identifiable {
     case websites = "Sitios Web"
-    case whitelist = "Lista Blanca (Permitidos)"
-    case permanent = "Escudo Permanente"
     case apps = "Aplicaciones Mac"
-    case emergency = "Desbloqueo & TDAH"
+    case permanent = "Escudo Permanente"
+    case downtime = "Tiempo Desactivado"
+    case appLimits = "Límites para apps"
+    case whitelist = "Lista Blanca (Permitidos)"
+    case emergency = "Desbloqueo"
     case general = "General"
     
     public var id: String { rawValue }
     
+    public var localizedTitle: String {
+        switch self {
+        case .websites: return L10n.tr("section.websites")
+        case .apps: return L10n.tr("section.apps")
+        case .permanent: return L10n.tr("section.permanent")
+        case .downtime: return L10n.tr("section.downtime")
+        case .appLimits: return L10n.tr("section.appLimits")
+        case .whitelist: return L10n.tr("section.whitelist")
+        case .emergency: return L10n.tr("section.emergency")
+        case .general: return L10n.tr("section.general")
+        }
+    }
+    
     public var iconName: String {
         switch self {
         case .websites: return "globe"
-        case .whitelist: return "checkmark.shield.fill"
-        case .permanent: return "shield.checkered"
         case .apps: return "app.badge.checkmark"
+        case .permanent: return "shield.checkered"
+        case .downtime: return "clock.badge.checkmark.fill"
+        case .appLimits: return "hourglass"
+        case .whitelist: return "checkmark.shield.fill"
         case .emergency: return "key.fill"
         case .general: return "gearshape"
         }
@@ -24,9 +66,11 @@ public enum SettingsSection: String, CaseIterable, Identifiable {
     public var iconColor: Color {
         switch self {
         case .websites: return .blue
-        case .whitelist: return Color(hex: "#10B981")
-        case .permanent: return Color(hex: "#E11D48")
         case .apps: return .purple
+        case .permanent: return Color(hex: "#E11D48")
+        case .downtime: return Color(hex: "#6366F1")
+        case .appLimits: return Color(hex: "#F59E0B")
+        case .whitelist: return Color(hex: "#10B981")
         case .emergency: return .orange
         case .general: return .gray
         }
@@ -35,12 +79,32 @@ public enum SettingsSection: String, CaseIterable, Identifiable {
 
 public struct SettingsContainerView: View {
     @ObservedObject var engine = FocusEngine.shared
+    @ObservedObject var l10n = LocalizationService.shared
     @State private var isUnlocked: Bool = false
     @State private var enteredPin: String = ""
     @State private var isSuccess: Bool = false
     @State private var errorMessage: String? = nil
     @State private var selectedSection: SettingsSection = .websites
     @Environment(\.dismiss) private var dismiss
+    
+    // Estados para la recuperación de contraseña tras 3 intentos fallidos
+    @State private var failedPinAttempts: Int = 0
+    @State private var isShowingForgotModal: Bool = false
+    
+    @State private var recoveryMethodIndex: Int = 0 // 0: Pregunta Secreta, 1: Correo Electrónico
+    @State private var recoverySecurityAnswer: String = ""
+    @State private var recoveryNewPin: String = ""
+    @State private var recoveryConfirmPin: String = ""
+    @State private var recoveryEmailCode: String = ""
+    @State private var sentRecoveryCode: String = ""
+    @State private var isSendingEmailCode: Bool = false
+    @State private var emailCodeSentMessage: String? = nil
+    @State private var recoveryErrorMessage: String? = nil
+    @State private var recoverySuccessMessage: String? = nil
+    
+    // Estados para la Copia de Seguridad & Transferencia
+    @State private var backupMessage: String? = nil
+    @State private var isBackupSuccess: Bool = true
     
     public var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -70,12 +134,15 @@ public struct SettingsContainerView: View {
             .keyboardShortcut(.cancelAction)
             .help("Cerrar (Esc)")
         }
-        .frame(minWidth: 880, minHeight: 600)
+        .frame(width: 900, height: 620)
+        .sheet(isPresented: $isShowingForgotModal) {
+            companionRecoverySheetContent
+        }
     }
     
     // MARK: - Vista Bloqueada de Configuración General
     private var masterLockedView: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 20) {
             Spacer()
             
             ZStack {
@@ -115,18 +182,39 @@ public struct SettingsContainerView: View {
                 }
             )
             
-            Button(action: { verifyMasterPin() }) {
-                HStack(spacing: 8) {
-                    Image(systemName: isSuccess ? "lock.open.fill" : "key.fill")
-                    Text("Acceder a Configuración")
+            VStack(spacing: 12) {
+                Button(action: { verifyMasterPin() }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: isSuccess ? "lock.open.fill" : "key.fill")
+                        Text("Acceder a Configuración")
+                    }
+                    .font(.headline)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
                 }
-                .font(.headline)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 8)
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: isSuccess ? "#10B981" : "#F43F5E"))
+                .disabled(enteredPin.isEmpty || isSuccess)
+                
+                // Enlace de Recuperación tras 3 Intentos Fallidos
+                if failedPinAttempts >= 3 {
+                    Button(action: {
+                        resetRecoveryForm()
+                        isShowingForgotModal = true
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "questionmark.circle.fill")
+                            Text("¿Olvidaste la contraseña del compañero?")
+                                .underline()
+                        }
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(Color(hex: "#F43F5E"))
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.opacity.combined(with: .scale))
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color(hex: isSuccess ? "#10B981" : "#F43F5E"))
-            .disabled(enteredPin.isEmpty || isSuccess)
             
             Spacer()
         }
@@ -138,12 +226,13 @@ public struct SettingsContainerView: View {
     private func verifyMasterPin() {
         let clean = enteredPin.trimmingCharacters(in: .whitespacesAndNewlines)
         let master = engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isMatch = clean == master || clean == "1234" || master.isEmpty
+        let isMatch = (!master.isEmpty && clean == master) || master.isEmpty
         
         if isMatch {
             withAnimation(.spring()) {
                 isSuccess = true
                 errorMessage = nil
+                failedPinAttempts = 0
             }
             SoundService.shared.play("Hero")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
@@ -155,7 +244,344 @@ public struct SettingsContainerView: View {
             }
         } else {
             SoundService.shared.play("Basso")
-            errorMessage = "Clave incorrecta. Pídesela a tu compañero."
+            failedPinAttempts += 1
+            if failedPinAttempts >= 3 {
+                errorMessage = "Clave incorrecta (Intento \(failedPinAttempts)). Puedes recuperar el acceso abajo."
+            } else {
+                errorMessage = "Clave incorrecta (Intento \(failedPinAttempts) de 3). Pídesela a tu compañero."
+            }
+        }
+    }
+    
+    // MARK: - Modal Profesional de Recuperación de Contraseña
+    private var companionRecoverySheetContent: some View {
+        VStack(spacing: 18) {
+            // Encabezado
+            HStack {
+                ZStack {
+                    Circle()
+                        .fill(Color(hex: "#F43F5E").opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: "key.horizontal.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(Color(hex: "#F43F5E"))
+                }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recuperar Clave de Compañero")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                    Text("Restablece el PIN maestro utilizando tu método de seguridad configurado.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                Button("Cerrar") {
+                    isShowingForgotModal = false
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            
+            Divider()
+            
+            // Selector de Método de Recuperación
+            let hasEmail = !availableRecoveryEmail.isEmpty
+            Picker("Método de Recuperación", selection: $recoveryMethodIndex) {
+                Text("Pregunta Secreta").tag(0)
+                if hasEmail {
+                    Text("Correo Electrónico").tag(1)
+                }
+            }
+            .pickerStyle(.segmented)
+            
+            // Mensajes de Estado
+            if let error = recoveryErrorMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(error)
+                        .font(.caption)
+                }
+                .foregroundColor(.red)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.red.opacity(0.1))
+                .cornerRadius(8)
+            }
+            
+            if let success = recoverySuccessMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                    Text(success)
+                        .font(.caption)
+                }
+                .foregroundColor(.green)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.green.opacity(0.1))
+                .cornerRadius(8)
+            }
+            
+            // Formulario según el Método
+            if recoveryMethodIndex == 0 {
+                // MARK: Método 1 - Pregunta Secreta
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Pregunta de Seguridad:")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.secondary)
+                        
+                        Text("\"\(engine.settings.securityQuestion)\"")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.06))
+                            .cornerRadius(8)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Respuesta Secreta:")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.secondary)
+                        
+                        SecureField("Escribe la respuesta exacta...", text: $recoverySecurityAnswer)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    
+                    pinResetInputFields
+                }
+            } else {
+                // MARK: Método 2 - Correo Electrónico
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Correo de Recuperación Registrado:")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.secondary)
+                        
+                        HStack {
+                            Image(systemName: "envelope.fill")
+                                .foregroundColor(.blue)
+                            Text(obfuscateEmail(availableRecoveryEmail))
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                            Spacer()
+                            
+                            Button(action: { sendRecoveryEmailCode() }) {
+                                HStack(spacing: 4) {
+                                    if isSendingEmailCode {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Image(systemName: "paperplane.fill")
+                                    }
+                                    Text(sentRecoveryCode.isEmpty ? "Enviar Código" : "Reenviar")
+                                }
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.blue)
+                            .controlSize(.small)
+                            .disabled(isSendingEmailCode)
+                        }
+                        .padding(10)
+                        .background(Color.blue.opacity(0.08))
+                        .cornerRadius(8)
+                    }
+                    
+                    if let msg = emailCodeSentMessage {
+                        HStack(spacing: 6) {
+                            Image(systemName: "info.circle.fill")
+                            Text(msg)
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.blue)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Código de 6 dígitos recibido:")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.secondary)
+                        
+                        TextField("ej. 123456", text: $recoveryEmailCode)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    
+                    pinResetInputFields
+                }
+            }
+            
+            Spacer()
+            
+            // Botón de Acción Principal
+            Button(action: { submitPasswordRecovery() }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text("Restablecer PIN y Acceder a Configuración")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(hex: "#F43F5E"))
+            .disabled(!isRecoveryFormValid)
+        }
+        .padding(24)
+        .frame(width: 520, height: 530)
+    }
+    
+    private var pinResetInputFields: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Nuevo PIN (4 dígitos):")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
+                
+                SecureField("••••", text: $recoveryNewPin)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Confirmar PIN:")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
+                
+                SecureField("••••", text: $recoveryConfirmPin)
+                    .textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+    
+    private var availableRecoveryEmail: String {
+        if !engine.settings.recoveryEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return engine.settings.recoveryEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if !engine.settings.partnerEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return engine.settings.partnerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return ""
+    }
+    
+    private func obfuscateEmail(_ email: String) -> String {
+        let parts = email.components(separatedBy: "@")
+        guard parts.count == 2, let first = parts.first, let domain = parts.last else { return email }
+        if first.count <= 2 {
+            return "\(first.prefix(1))***@\(domain)"
+        }
+        return "\(first.prefix(2))***\(first.suffix(1))@\(domain)"
+    }
+    
+    private var isRecoveryFormValid: Bool {
+        guard recoveryNewPin.count >= 4 && recoveryNewPin == recoveryConfirmPin else { return false }
+        if recoveryMethodIndex == 0 {
+            return !recoverySecurityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } else {
+            return !recoveryEmailCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+    
+    private func resetRecoveryForm() {
+        recoverySecurityAnswer = ""
+        recoveryNewPin = ""
+        recoveryConfirmPin = ""
+        recoveryEmailCode = ""
+        sentRecoveryCode = ""
+        isSendingEmailCode = false
+        emailCodeSentMessage = nil
+        recoveryErrorMessage = nil
+        recoverySuccessMessage = nil
+        recoveryMethodIndex = 0
+    }
+    
+    private func sendRecoveryEmailCode() {
+        let email = availableRecoveryEmail
+        guard !email.isEmpty else {
+            recoveryErrorMessage = "No hay un correo de recuperación configurado."
+            return
+        }
+        
+        isSendingEmailCode = true
+        recoveryErrorMessage = nil
+        let code = EmailService.shared.generateEmergencyCode()
+        sentRecoveryCode = code
+        
+        EmailService.shared.sendEmergencyCode(
+            code: code,
+            toEmail: email,
+            reflectionText: "Recuperación de clave maestra de FocusPanic",
+            smtpSettings: engine.settings.smtpSettings
+        ) { result in
+            isSendingEmailCode = false
+            switch result {
+            case .success(let msg):
+                emailCodeSentMessage = "Código de 6 dígitos enviado exitosamente a \(obfuscateEmail(email)). Revisa tu bandeja de entrada."
+                SoundService.shared.play("Hero")
+            case .failure(let err):
+                recoveryErrorMessage = "Error al enviar correo: \(err.localizedDescription)"
+                SoundService.shared.play("Basso")
+            }
+        }
+    }
+    
+    private func submitPasswordRecovery() {
+        recoveryErrorMessage = nil
+        
+        // 1. Validar PIN
+        guard recoveryNewPin.count >= 4 else {
+            recoveryErrorMessage = "El PIN debe tener al menos 4 dígitos."
+            SoundService.shared.play("Basso")
+            return
+        }
+        guard recoveryNewPin == recoveryConfirmPin else {
+            recoveryErrorMessage = "Los dos campos de PIN no coinciden."
+            SoundService.shared.play("Basso")
+            return
+        }
+        
+        // 2. Validar según método
+        if recoveryMethodIndex == 0 {
+            let cleanAnswer = recoverySecurityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let expectedAnswer = engine.settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            
+            let isCorrect = !expectedAnswer.isEmpty && cleanAnswer == expectedAnswer
+            guard isCorrect else {
+                recoveryErrorMessage = "Respuesta de seguridad incorrecta."
+                SoundService.shared.play("Basso")
+                return
+            }
+        } else {
+            let cleanCode = recoveryEmailCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard cleanCode == sentRecoveryCode && !cleanCode.isEmpty else {
+                recoveryErrorMessage = "El código de verificación del correo no es válido."
+                SoundService.shared.play("Basso")
+                return
+            }
+        }
+        
+        // 3. Aplicar nuevo PIN y desbloquear
+        engine.settings.masterCompanionPassword = recoveryNewPin
+        engine.settings.isMasterPasswordEnabled = true
+        engine.saveSettings()
+        
+        failedPinAttempts = 0
+        recoverySuccessMessage = "¡Clave restablecida exitosamente! Accediendo..."
+        SoundService.shared.play("Hero")
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            isShowingForgotModal = false
+            isUnlocked = true
+            enteredPin = ""
         }
     }
     
@@ -163,12 +589,12 @@ public struct SettingsContainerView: View {
     private var unlockedSettingsLayout: some View {
         HStack(spacing: 0) {
             // MARK: - Barra Lateral (Sidebar)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Image(systemName: "slider.horizontal.3")
                         .font(.headline)
                         .foregroundColor(.accentColor)
-                    Text("Configuración")
+                    Text(L10n.tr("settings.title"))
                         .font(.headline)
                         .fontWeight(.bold)
                     Spacer()
@@ -181,7 +607,7 @@ public struct SettingsContainerView: View {
                     }) {
                         HStack(spacing: 4) {
                             Image(systemName: "lock.fill")
-                            Text("Bloquear")
+                            Text(L10n.tr("settings.lock"))
                         }
                         .font(.caption2)
                         .foregroundColor(.secondary)
@@ -189,16 +615,29 @@ public struct SettingsContainerView: View {
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 22)
+                .padding(.top, 20)
                 .padding(.bottom, 12)
                 
-                ForEach(SettingsSection.allCases) { section in
-                    sidebarItem(section: section)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(SettingsGroup.allCases, id: \.self) { group in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(group.localizedTitle)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.secondary.opacity(0.6))
+                                    .padding(.horizontal, 14)
+                                    .padding(.bottom, 2)
+                                
+                                ForEach(group.sections) { section in
+                                    sidebarItem(section: section)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.bottom, 16)
                 }
-                
-                Spacer()
             }
-            .frame(width: 235)
+            .frame(width: 245)
             .background(Color.secondary.opacity(0.06))
             
             Divider()
@@ -208,12 +647,16 @@ public struct SettingsContainerView: View {
                 switch selectedSection {
                 case .websites:
                     WebBlockListView()
-                case .whitelist:
-                    WhitelistSettingsView()
-                case .permanent:
-                    PermanentShieldView()
                 case .apps:
                     AppBlockListView()
+                case .permanent:
+                    PermanentShieldView()
+                case .downtime:
+                    DowntimeSettingsView()
+                case .appLimits:
+                    AppLimitsSettingsView()
+                case .whitelist:
+                    WhitelistSettingsView()
                 case .emergency:
                     EmergencyUnlockSettingsView()
                 case .general:
@@ -243,7 +686,7 @@ public struct SettingsContainerView: View {
                         .foregroundColor(isSelected ? .white : section.iconColor)
                 }
                 
-                Text(section.rawValue)
+                Text(section.localizedTitle)
                     .font(.subheadline)
                     .fontWeight(isSelected ? .semibold : .regular)
                     .foregroundColor(isSelected ? .primary : .secondary)
@@ -274,6 +717,24 @@ public struct SettingsContainerView: View {
                         Circle()
                             .fill(Color(hex: "#E11D48"))
                             .frame(width: 8, height: 8)
+                    }
+                } else if section == .downtime {
+                    if engine.settings.downtimeSchedule.isEnabled {
+                        Circle()
+                            .fill(Color(hex: "#6366F1"))
+                            .frame(width: 8, height: 8)
+                    }
+                } else if section == .appLimits {
+                    let count = engine.settings.appLimits.filter { $0.isEnabled }.count
+                    if count > 0 {
+                        Text("\(count)")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Color(hex: "#F59E0B").opacity(0.18))
+                            .foregroundColor(Color(hex: "#F59E0B"))
+                            .cornerRadius(8)
                     }
                 } else if section == .apps {
                     let count = engine.settings.blockedApps.filter { $0.isEnabled }.count
@@ -309,12 +770,67 @@ public struct PermanentShieldView: View {
     @State private var isSuccess = false
     
     // Controles de Adición Individual vs Varios Sitios
+    @State private var isAddingPermanentDomain = false
     @State private var addMode = 0 // 0: Individual, 1: Varios Sitios
-    @State private var singleName = ""
     @State private var singleDomain = ""
     @State private var batchText = ""
+    @State private var permWebSearchText = ""
     @State private var newKeyword = ""
     @State private var isKeywordsListExpanded = false
+    @State private var isWhatsAppShieldExpanded = false
+    @State private var isShowingAppCatalogSheet = false
+    @State private var discoveredApps: [BlockedApp] = []
+    @State private var appSheetSearchText = ""
+    @State private var isLoadingApps = false
+    @State private var showAllPermanentWebsites = false
+    @State private var showAllPermanentApps = false
+    
+    private var whatsAppActiveCount: Int {
+        (engine.settings.isWhatsAppStatusBlockerEnabled ? 1 : 0) + (engine.settings.isWhatsAppChannelsBlockerEnabled ? 1 : 0)
+    }
+    
+    private var permanentFilteredApps: [BlockedApp] {
+        engine.settings.blockedApps
+            .filter { AppBlockerService.isAppInstalled($0) }
+            .sorted { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending }
+    }
+    
+    private var displayedPermanentApps: [BlockedApp] {
+        if showAllPermanentApps || permanentFilteredApps.count <= 10 {
+            return permanentFilteredApps
+        }
+        return Array(permanentFilteredApps.prefix(10))
+    }
+    
+    private var permanentFilteredWebsites: [BlockedWebsite] {
+        engine.settings.blockedWebsites
+            .filter {
+                permWebSearchText.isEmpty ||
+                $0.name.localizedCaseInsensitiveContains(permWebSearchText) ||
+                $0.domain.localizedCaseInsensitiveContains(permWebSearchText)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    
+    private var displayedPermanentWebsites: [BlockedWebsite] {
+        if !permWebSearchText.isEmpty || showAllPermanentWebsites || permanentFilteredWebsites.count <= 10 {
+            return permanentFilteredWebsites
+        }
+        return Array(permanentFilteredWebsites.prefix(10))
+    }
+    
+    private var filteredSheetApps: [BlockedApp] {
+        let installed = discoveredApps.filter { AppBlockerService.isAppInstalled($0) }
+        if appSheetSearchText.isEmpty {
+            return installed.sorted { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending }
+        }
+        return installed
+            .filter {
+                $0.appName.localizedCaseInsensitiveContains(appSheetSearchText) ||
+                $0.bundleIdentifier.localizedCaseInsensitiveContains(appSheetSearchText)
+            }
+            .sorted { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending }
+    }
     
     public var body: some View {
         Group {
@@ -405,7 +921,7 @@ public struct PermanentShieldView: View {
     private func verifyPassword() {
         let clean = enteredPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         let master = engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isMatch = clean == master || clean == "1234" || master.isEmpty
+        let isMatch = (!master.isEmpty && clean == master) || master.isEmpty
         
         if isMatch {
             withAnimation(.spring()) {
@@ -422,13 +938,14 @@ public struct PermanentShieldView: View {
             }
         } else {
             SoundService.shared.play("Basso")
-            errorMessage = "Clave incorrecta (Usa 1234)."
+            errorMessage = "Clave incorrecta. Pídesela a tu compañero."
         }
     }
     
     // MARK: - Contenido Desbloqueado del Escudo Permanente
     private var unlockedShieldContent: some View {
-        ScrollView {
+        let isEn = LocalizationService.shared.currentLanguage == .english
+        return ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 // Encabezado
                 HStack(alignment: .center) {
@@ -436,12 +953,12 @@ public struct PermanentShieldView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "shield.checkered")
                                 .foregroundColor(Color(hex: "#E11D48"))
-                            Text("Escudo Permanente & Modo Seguro")
+                            Text(L10n.tr("permanent.header.title"))
                         }
                         .font(.title2)
                         .fontWeight(.bold)
                         
-                        Text("Reglas continuas en tu Mac sin importar si hay un temporizador iniciado.")
+                        Text(L10n.tr("permanent.header.subtitle"))
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -450,7 +967,9 @@ public struct PermanentShieldView: View {
                     
                     // Toggle Maestro del Escudo Permanente
                     HStack(spacing: 8) {
-                        Text(engine.settings.isPermanentShieldActive ? "Activo" : "Inactivo")
+                        Text(engine.settings.isPermanentShieldActive
+                             ? (isEn ? "Active" : "Activo")
+                             : (isEn ? "Inactive" : "Inactivo"))
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(engine.settings.isPermanentShieldActive ? .green : .secondary)
@@ -469,7 +988,7 @@ public struct PermanentShieldView: View {
                             enteredPassword = ""
                         }
                     }) {
-                        Label("Bloquear", systemImage: "lock.fill")
+                        Label(L10n.tr("settings.lock"), systemImage: "lock.fill")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -492,9 +1011,9 @@ public struct PermanentShieldView: View {
                         }
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Bloqueo de Contenido Adulto")
+                            Text(L10n.tr("permanent.adult.title"))
                                 .font(.headline)
-                            Text("Bloquea +180 sitios pornográficos y de contenido explícito de forma ininterrumpida.")
+                            Text(L10n.tr("permanent.adult.desc"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -508,22 +1027,44 @@ public struct PermanentShieldView: View {
                         .toggleStyle(.switch)
                     }
                     
+                    if engine.settings.isAlwaysBlockAdultSites {
+                        HStack(spacing: 8) {
+                            Label("TeraBox Estricto (Páginas y Buscadores)", systemImage: "bolt.shield.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(hex: "#E11D48").opacity(0.12))
+                                .foregroundColor(Color(hex: "#E11D48"))
+                                .cornerRadius(6)
+                            
+                            Label("Navegador DuckDuckGo Bloqueado", systemImage: "xmark.app.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.orange.opacity(0.12))
+                                .foregroundColor(.orange)
+                                .cornerRadius(6)
+                        }
+                        .padding(.leading, 58)
+                        .transition(.opacity)
+                    }
+                    
                     Divider()
                     
                     HStack(spacing: 14) {
                         ZStack {
                             Circle()
-                                .fill(Color.purple.opacity(0.15))
-                            .frame(width: 44, height: 44)
-                            Image(systemName: "magnifyingglass.shield")
-                                .font(.system(size: 20))
+                                .fill(Color.purple.opacity(0.18))
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "lock.shield.fill")
+                                .font(.system(size: 20, weight: .bold))
                                 .foregroundColor(.purple)
                         }
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Modo Seguro Obligatorio (SafeSearch)")
+                            Text(L10n.tr("permanent.safesearch.title"))
                                 .font(.headline)
-                            Text("Fuerza la búsqueda segura en Google, Bing y DuckDuckGo sin posibilidad de desactivarla.")
+                            Text(L10n.tr("permanent.safesearch.desc"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -551,9 +1092,9 @@ public struct PermanentShieldView: View {
                         }
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Escudo Anti-Modo Incógnito / Privado")
+                            Text(L10n.tr("permanent.incognito.title"))
                                 .font(.headline)
-                            Text("Cierra automáticamente ventanas privadas en Safari, Google Chrome, Brave, Arc y Edge para evitar puntos ciegos de navegación.")
+                            Text(L10n.tr("permanent.incognito.desc"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -666,7 +1207,7 @@ public struct PermanentShieldView: View {
                                                             .fontWeight(.bold)
                                                         
                                                         Button(action: {
-                                                            engine.removeBlockedKeyword(kw)
+                                                             engine.removeBlockedKeyword(kw)
                                                         }) {
                                                             Image(systemName: "xmark")
                                                                 .font(.system(size: 8, weight: .bold))
@@ -691,17 +1232,148 @@ public struct PermanentShieldView: View {
                             .padding(.top, 4)
                         }
                     }
+                    
+                    Divider()
+                    
+                    // Escudo para WhatsApp (Estados & Canales)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color(hex: "#25D366").opacity(0.15))
+                                    .frame(width: 44, height: 44)
+                                Image(systemName: "circle.dashed.inset.filled")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(Color(hex: "#25D366"))
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Escudo para WhatsApp (Estados & Canales)")
+                                    .font(.headline)
+                                Text("Permite usar WhatsApp para chats de trabajo, pero bloquea las distracciones de contenido infinito.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            // Botón / Indicador de Estado
+                            HStack(spacing: 6) {
+                                Text(whatsAppActiveCount > 0 ? "\(whatsAppActiveCount) ACTIVAS" : "DESACTIVADO")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(whatsAppActiveCount > 0 ? Color(hex: "#25D366") : .secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill((whatsAppActiveCount > 0 ? Color(hex: "#25D366") : Color.secondary).opacity(0.15)))
+                                
+                                Image(systemName: isWhatsAppShieldExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(Color(hex: "#25D366"))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.secondary.opacity(0.08))
+                            .cornerRadius(8)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                isWhatsAppShieldExpanded.toggle()
+                            }
+                        }
+                        
+                        // Sub-opciones de WhatsApp (Desplegables)
+                        if isWhatsAppShieldExpanded {
+                            VStack(spacing: 8) {
+                                // 1. Bloqueo de Estados / Historias
+                                HStack(spacing: 12) {
+                                    Image(systemName: "circle.dashed")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(Color(hex: "#25D366"))
+                                        .frame(width: 20)
+                                    
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text("Bloquear Estados / Historias")
+                                            .font(.subheadline)
+                                            .fontWeight(.medium)
+                                        Text("Cierra automáticamente el visor de historias para no perder el tiempo")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Toggle("", isOn: Binding(
+                                        get: { engine.settings.isWhatsAppStatusBlockerEnabled },
+                                        set: { engine.updateWhatsAppStatusBlocker(enabled: $0) }
+                                    ))
+                                    .toggleStyle(.switch)
+                                    .controlSize(.small)
+                                }
+                                .padding(8)
+                                .background(Color(hex: "#25D366").opacity(0.06))
+                                .cornerRadius(8)
+                                
+                                // 2. Bloqueo de Canales / Novedades
+                                HStack(spacing: 12) {
+                                    Image(systemName: "megaphone.fill")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(Color(hex: "#0284C7"))
+                                        .frame(width: 20)
+                                    
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text("Bloquear Canales / Novedades")
+                                            .font(.subheadline)
+                                            .fontWeight(.medium)
+                                        Text("Cierra la pestaña de canales para evitar lecturas infinitas")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Toggle("", isOn: Binding(
+                                        get: { engine.settings.isWhatsAppChannelsBlockerEnabled },
+                                        set: { engine.updateWhatsAppChannelsBlocker(enabled: $0) }
+                                    ))
+                                    .toggleStyle(.switch)
+                                    .controlSize(.small)
+                                }
+                                .padding(8)
+                                .background(Color(hex: "#0284C7").opacity(0.06))
+                                .cornerRadius(8)
+                            }
+                            .padding(.top, 4)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    }
                 }
                 .padding(16)
                 .background(Color.secondary.opacity(0.04))
                 .cornerRadius(12)
                 
                 // 2. Sitios Web Bloqueados
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Label("Sitios Web Bloqueados (\(engine.settings.permanentBlockedWebsites.count) añadidos)", systemImage: "globe")
+                        Label(isEn ? "Websites in Permanent Shield (\(engine.settings.permanentBlockedWebsites.count) added)" : "Sitios Web en Escudo Permanente (\(engine.settings.permanentBlockedWebsites.count) añadidos)", systemImage: "globe")
                             .font(.headline)
                         Spacer()
+                        
+                        Button(action: {
+                            withAnimation(.spring(response: 0.3)) {
+                                isAddingPermanentDomain.toggle()
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: isAddingPermanentDomain ? "chevron.up" : "plus")
+                                Text(isAddingPermanentDomain ? L10n.tr("common.hide") : L10n.tr("webblock.btn.add"))
+                            }
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#E11D48"))
+                        .controlSize(.small)
                         
                         let allPermWebs = !engine.settings.permanentBlockedWebsites.isEmpty && engine.settings.permanentBlockedWebsites.count >= engine.settings.blockedWebsites.count
                         Button(action: {
@@ -709,7 +1381,7 @@ public struct PermanentShieldView: View {
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: allPermWebs ? "xmark.circle" : "checkmark.circle")
-                                Text(allPermWebs ? "Desactivar Todos" : "Activar Todos")
+                                Text(allPermWebs ? L10n.tr("common.disableAll") : L10n.tr("common.enableAll"))
                             }
                             .font(.caption)
                             .fontWeight(.semibold)
@@ -718,70 +1390,151 @@ public struct PermanentShieldView: View {
                         .controlSize(.small)
                     }
                     
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker("Modo de Adición", selection: $addMode) {
-                            Text("Individual").tag(0)
-                            Text("Varios Sitios").tag(1)
-                        }
-                        .pickerStyle(.segmented)
-                        
-                        if addMode == 0 {
-                            HStack(spacing: 10) {
-                                TextField("Nombre (ej. Casino)", text: $singleName)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: .infinity)
-                                
-                                TextField("Dominio (ej. casino.com)", text: $singleDomain)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: .infinity)
-                                    .onSubmit { addSinglePermanentDomain() }
-                                
-                                Button(action: { addSinglePermanentDomain() }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "plus")
-                                        Text("Bloquear")
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(Color(hex: "#E11D48"))
-                                .disabled(singleDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    // Panel de Añadir Sitios (Colapsable)
+                    if isAddingPermanentDomain {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("", selection: $addMode) {
+                                Text(L10n.tr("webblock.add.single")).tag(0)
+                                Text(L10n.tr("webblock.add.batch")).tag(1)
                             }
-                        } else {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Pega varios dominios (uno por línea o separados por comas):")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                
-                                TextEditor(text: $batchText)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .frame(height: 70)
-                                    .padding(4)
+                            .pickerStyle(.segmented)
+                            
+                            if addMode == 0 {
+                                HStack(spacing: 8) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "globe")
+                                            .foregroundColor(.secondary)
+                                        TextField(L10n.tr("webblock.add.single.placeholder"), text: $singleDomain)
+                                            .textFieldStyle(.plain)
+                                            .onSubmit { addSinglePermanentDomain() }
+                                    }
+                                    .frame(height: 32)
+                                    .padding(.horizontal, 10)
                                     .background(Color(NSColor.controlBackgroundColor))
-                                    .cornerRadius(6)
-                                
-                                HStack {
-                                    Spacer()
-                                    Button(action: { processBatchPermanentDomains() }) {
+                                    .cornerRadius(8)
+                                    
+                                    Button(action: { addSinglePermanentDomain() }) {
                                         HStack(spacing: 4) {
-                                            Image(systemName: "plus.square.fill.on.square.fill")
-                                            Text("Añadir Varios Sitios")
+                                            Image(systemName: "plus.circle.fill")
+                                            Text(L10n.tr("webblock.add.btn.block"))
                                         }
+                                        .font(.caption)
+                                        .fontWeight(.bold)
+                                        .frame(height: 32)
+                                        .padding(.horizontal, 12)
                                     }
                                     .buttonStyle(.borderedProminent)
                                     .tint(Color(hex: "#E11D48"))
-                                    .disabled(batchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                    .controlSize(.small)
+                                    .disabled(singleDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                            } else {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(L10n.tr("webblock.add.batch.hint"))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    
+                                    TextEditor(text: $batchText)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .frame(height: 70)
+                                        .padding(4)
+                                        .background(Color(NSColor.controlBackgroundColor))
+                                        .cornerRadius(6)
+                                    
+                                    HStack {
+                                        Spacer()
+                                        Button(action: { processBatchPermanentDomains() }) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "plus.square.fill.on.square.fill")
+                                                Text(L10n.tr("webblock.add.batch.btn"))
+                                            }
+                                            .font(.caption)
+                                            .fontWeight(.bold)
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(Color(hex: "#E11D48"))
+                                        .controlSize(.small)
+                                        .disabled(batchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                    }
                                 }
                             }
                         }
+                        .padding(12)
+                        .background(Color.secondary.opacity(0.05))
+                        .cornerRadius(10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    .padding(12)
-                    .background(Color.secondary.opacity(0.05))
-                    .cornerRadius(10)
                     
-                    VStack(spacing: 6) {
-                        ForEach(engine.settings.blockedWebsites) { site in
-                            permanentWebsiteRow(site: site)
+                    // Buscador de Sitios del Escudo Permanente (Homogéneo 32px)
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField("Buscar sitio en el escudo permanente...", text: $permWebSearchText)
+                            .textFieldStyle(.plain)
+                        if !permWebSearchText.isEmpty {
+                            Button(action: { permWebSearchText = "" }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
                         }
+                    }
+                    .frame(height: 32)
+                    .padding(.horizontal, 10)
+                    .background(Color.secondary.opacity(0.08))
+                    .cornerRadius(8)
+                    
+                    if displayedPermanentWebsites.isEmpty {
+                        HStack {
+                            Spacer()
+                            VStack(spacing: 6) {
+                                Text("No se encontraron sitios con \"\(permWebSearchText)\"")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Button(action: {
+                                    singleDomain = permWebSearchText
+                                    addSinglePermanentDomain()
+                                    permWebSearchText = ""
+                                }) {
+                                    Label("Añadir \"\(permWebSearchText)\" al Escudo", systemImage: "plus.circle")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                            .padding(.vertical, 16)
+                            Spacer()
+                        }
+                    } else {
+                        VStack(spacing: 6) {
+                            ForEach(displayedPermanentWebsites) { site in
+                                permanentWebsiteRow(site: site)
+                            }
+                        }
+                    }
+                    
+                    if permanentFilteredWebsites.count > 10 {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showAllPermanentWebsites.toggle()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: showAllPermanentWebsites ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                Text(showAllPermanentWebsites
+                                     ? "Ver menos sitios"
+                                     : "Ver más sitios (\(permanentFilteredWebsites.count - 10) adicionales)")
+                            }
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(Color(hex: "#E11D48"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Color(hex: "#E11D48").opacity(0.08))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
                     }
                 }
                 .padding(14)
@@ -791,17 +1544,33 @@ public struct PermanentShieldView: View {
                 // 3. Aplicaciones de Mac Bloqueadas
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Label("Aplicaciones Bloqueadas (\(engine.settings.permanentBlockedApps.count) activas)", systemImage: "app.badge.checkmark")
+                        let activeCount = permanentFilteredApps.filter { engine.settings.permanentBlockedApps.contains($0.bundleIdentifier) }.count
+                        Label(isEn ? "Blocked Applications (\(activeCount) active)" : "Aplicaciones Bloqueadas (\(activeCount) activas)", systemImage: "app.badge.checkmark")
                             .font(.headline)
                         Spacer()
                         
-                        let allPermApps = !engine.settings.permanentBlockedApps.isEmpty && engine.settings.permanentBlockedApps.count >= engine.settings.blockedApps.count
+                        Button(action: {
+                            scanInstalledApps()
+                            isShowingAppCatalogSheet = true
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus.app.fill")
+                                Text(L10n.tr("appblock.btn.add"))
+                            }
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#E11D48"))
+                        .controlSize(.small)
+                        
+                        let allPermApps = !permanentFilteredApps.isEmpty && permanentFilteredApps.allSatisfy { engine.settings.permanentBlockedApps.contains($0.bundleIdentifier) }
                         Button(action: {
                             engine.toggleAllPermanentApps(enabled: !allPermApps)
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: allPermApps ? "xmark.circle" : "checkmark.circle")
-                                Text(allPermApps ? "Desactivar Todos" : "Activar Todos")
+                                Text(allPermApps ? L10n.tr("common.disableAll") : L10n.tr("common.enableAll"))
                             }
                             .font(.caption)
                             .fontWeight(.semibold)
@@ -811,9 +1580,33 @@ public struct PermanentShieldView: View {
                     }
                     
                     VStack(spacing: 6) {
-                        ForEach(engine.settings.blockedApps) { app in
+                        ForEach(displayedPermanentApps) { app in
                             permanentAppRow(app: app)
                         }
+                    }
+                    
+                    if permanentFilteredApps.count > 10 {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showAllPermanentApps.toggle()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: showAllPermanentApps ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                Text(showAllPermanentApps
+                                     ? "Ver menos aplicaciones"
+                                     : "Ver más aplicaciones (\(permanentFilteredApps.count - 10) adicionales)")
+                            }
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(Color(hex: "#E11D48"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Color(hex: "#E11D48").opacity(0.08))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
                     }
                 }
                 .padding(14)
@@ -821,6 +1614,9 @@ public struct PermanentShieldView: View {
                 .cornerRadius(12)
             }
             .padding(24)
+        }
+        .sheet(isPresented: $isShowingAppCatalogSheet) {
+            appCatalogSheetContent
         }
     }
     
@@ -857,33 +1653,21 @@ public struct PermanentShieldView: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
                 
-                if site.isCustom {
-                    Button(action: {
-                        deletePermanentWebsite(site: site)
-                    }) {
-                        Image(systemName: "trash")
-                            .font(.caption)
-                            .foregroundColor(.red.opacity(0.7))
-                    }
-                    .buttonStyle(.plain)
+                Button(action: {
+                    engine.removeBlockedWebsite(id: site.id)
+                }) {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundColor(.red.opacity(0.7))
                 }
+                .buttonStyle(.plain)
+                .help("Eliminar este sitio del listado")
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(isPerm ? Color(hex: "#E11D48").opacity(0.08) : Color.secondary.opacity(0.04))
         .cornerRadius(8)
-    }
-    
-    private func deletePermanentWebsite(site: BlockedWebsite) {
-        engine.settings.permanentBlockedWebsites.removeAll { $0 == site.domain.lowercased() }
-        engine.settings.blockedWebsites.removeAll { $0.id == site.id }
-        engine.saveSettings()
-        if engine.currentSession == nil {
-            engine.applyPermanentProtectionOnly()
-        } else {
-            engine.applySystemBlocks()
-        }
     }
     
     @ViewBuilder
@@ -917,6 +1701,122 @@ public struct PermanentShieldView: View {
         .cornerRadius(8)
     }
     
+    private var appCatalogSheetContent: some View {
+        VStack(spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Añadir Aplicación a Bloqueo Permanente")
+                        .font(.title3)
+                        .fontWeight(.bold)
+                    Text("Selecciona cualquier aplicación instalada en tu Mac para bloquearla continuamente.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("Cerrar") {
+                    isShowingAppCatalogSheet = false
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                TextField("Buscar app instalada en tu Mac...", text: $appSheetSearchText)
+                    .textFieldStyle(.plain)
+                if !appSheetSearchText.isEmpty {
+                    Button(action: { appSheetSearchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.08))
+            .cornerRadius(8)
+            
+            if isLoadingApps {
+                Spacer()
+                ProgressView("Escaneando aplicaciones instaladas...")
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(filteredSheetApps) { app in
+                            let isAlreadyPerm = engine.settings.permanentBlockedApps.contains(app.bundleIdentifier)
+                            
+                            HStack(spacing: 12) {
+                                AppIconView(app: app, size: 32)
+                                
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(app.appName)
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                    Text(app.bundleIdentifier)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                Spacer()
+                                
+                                if isAlreadyPerm {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "checkmark.shield.fill")
+                                        Text("Bloqueada")
+                                    }
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(Color(hex: "#E11D48"))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color(hex: "#E11D48").opacity(0.12))
+                                    .cornerRadius(6)
+                                } else {
+                                    Button(action: {
+                                        engine.addBlockedApp(app: app)
+                                        if !engine.settings.permanentBlockedApps.contains(app.bundleIdentifier) {
+                                            engine.togglePermanentApp(bundleId: app.bundleIdentifier)
+                                        }
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "plus")
+                                            Text("Bloquear")
+                                        }
+                                        .font(.caption)
+                                        .fontWeight(.bold)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(Color(hex: "#E11D48"))
+                                    .controlSize(.small)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(isAlreadyPerm ? Color(hex: "#E11D48").opacity(0.06) : Color.secondary.opacity(0.04))
+                            .cornerRadius(8)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 540, height: 480)
+    }
+    
+    private func scanInstalledApps() {
+        isLoadingApps = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let apps = AppBlockerService.discoverInstalledApplications()
+            DispatchQueue.main.async {
+                self.discoveredApps = apps
+                self.isLoadingApps = false
+            }
+        }
+    }
+    
     private func addSinglePermanentDomain() {
         let clean = singleDomain.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "https://", with: "")
@@ -926,10 +1826,10 @@ public struct PermanentShieldView: View {
         
         guard !clean.isEmpty else { return }
         
-        let name = singleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? clean.capitalized : singleName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = FocusEngine.cleanDomainToName(clean)
         
         if !engine.settings.blockedWebsites.contains(where: { $0.domain.lowercased() == clean }) {
-            let newSite = BlockedWebsite(domain: clean, name: name, category: .social, isEnabled: true)
+            let newSite = BlockedWebsite(domain: clean, name: name, category: .custom, isEnabled: true)
             engine.settings.blockedWebsites.append(newSite)
         }
         
@@ -944,7 +1844,6 @@ public struct PermanentShieldView: View {
         }
         
         singleDomain = ""
-        singleName = ""
     }
     
     private func processBatchPermanentDomains() {
@@ -988,12 +1887,19 @@ public struct PermanentShieldView: View {
 public struct GeneralSettingsView: View {
     @ObservedObject var engine = FocusEngine.shared
     @State private var helperStatus = HostBlockerService.shared.isHelperInstalled
+    @State private var dnsFamilyStatus = HostBlockerService.shared.isFamilyDNSActive()
     @State private var safariStatus = true
     @State private var notificationStatus = true
     @State private var testNotificationSent = false
     @State private var isShowingUninstallSheet = false
     @State private var uninstallPin = ""
     @State private var uninstallError: String? = nil
+    @State private var backupMessage: String? = nil
+    @State private var isBackupSuccess: Bool = true
+    
+    private var isAccessibilityActive: Bool {
+        engine.isAccessibilityTrusted || AXIsProcessTrusted()
+    }
     
     public var body: some View {
         ScrollView {
@@ -1003,12 +1909,12 @@ public struct GeneralSettingsView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "gearshape.2.fill")
                             .foregroundColor(.accentColor)
-                        Text("Configuración General & Diagnóstico")
+                        Text(L10n.tr("general.header.title"))
                     }
                     .font(.title2)
                     .fontWeight(.bold)
                     
-                    Text("Supervisa y valida los permisos de macOS para asegurar el bloqueo al 100%.")
+                    Text(L10n.tr("general.header.subtitle"))
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -1018,42 +1924,73 @@ public struct GeneralSettingsView: View {
                 // PANEL DE DIAGNÓSTICO DE PERMISOS DE macOS
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Label("Diagnóstico de Permisos de macOS", systemImage: "checkmark.seal.fill")
+                        Label(L10n.tr("general.diag.title"), systemImage: "checkmark.seal.fill")
                             .font(.headline)
                         Spacer()
                     }
                     
                     VStack(spacing: 8) {
-                        // 1. Motor de Bloqueo de Red (Helper /etc/hosts)
+                        // 1. DNS Seguro Cloudflare Families (1.1.1.3)
                         permissionRow(
-                            title: "Motor de Red (/etc/hosts)",
-                            subtitle: helperStatus ? "Instalado con permisos de sistema (sin pedir contraseña)." : "No instalado. Requiere ejecución inicial.",
+                            title: L10n.tr("general.diag.dns.title"),
+                            subtitle: dnsFamilyStatus ? L10n.tr("general.diag.dns.active") : L10n.tr("general.diag.dns.inactive"),
+                            icon: "shield.lefthalf.filled.badge.checkmark",
+                            isActive: dnsFamilyStatus,
+                            actionTitle: dnsFamilyStatus ? L10n.tr("common.verified") : L10n.tr("general.diag.connectDns")
+                        ) {
+                            HostBlockerService.shared.applyFamilyDNS()
+                            dnsFamilyStatus = HostBlockerService.shared.isFamilyDNSActive()
+                            if dnsFamilyStatus {
+                                SoundService.shared.play("Hero")
+                            }
+                        }
+                        
+                        // 2. Permiso de Accesibilidad de macOS (WhatsApp & Incógnito)
+                        permissionRow(
+                            title: L10n.tr("general.diag.ax.title"),
+                            subtitle: isAccessibilityActive ? L10n.tr("general.diag.ax.active") : L10n.tr("general.diag.ax.inactive"),
+                            icon: "figure.walk.motion",
+                            isActive: isAccessibilityActive,
+                            actionTitle: isAccessibilityActive ? L10n.tr("common.verified") : L10n.tr("general.diag.openSettings")
+                        ) {
+                            let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+                            _ = AXIsProcessTrustedWithOptions(options)
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                                NSWorkspace.shared.open(url)
+                            }
+                            engine.refreshPermissions()
+                        }
+                        
+                        // 3. Motor de Bloqueo de Red (Helper /etc/hosts)
+                        permissionRow(
+                            title: L10n.tr("general.diag.hosts.title"),
+                            subtitle: helperStatus ? L10n.tr("general.diag.hosts.active") : L10n.tr("general.diag.hosts.inactive"),
                             icon: "network.badge.shield.half.filled",
                             isActive: helperStatus,
-                            actionTitle: "Verificar / Reinstalar"
+                            actionTitle: L10n.tr("general.diag.verifyReinstall")
                         ) {
                             try? HostBlockerService.shared.installHelper()
                             helperStatus = HostBlockerService.shared.isHelperInstalled
                         }
                         
-                        // 2. Automatización de Safari & Navegadores
+                        // 4. Automatización de Safari & Navegadores
                         permissionRow(
-                            title: "Automatización de Safari (AppleScript)",
-                            subtitle: "Permite interceptar y cerrar pestañas distractoras al instante.",
+                            title: L10n.tr("general.diag.safari.title"),
+                            subtitle: L10n.tr("general.diag.safari.desc"),
                             icon: "safari.fill",
                             isActive: safariStatus,
-                            actionTitle: "Probar Permiso"
+                            actionTitle: L10n.tr("general.diag.testPermission")
                         ) {
                             testSafariAutomation()
                         }
                         
-                        // 3. Notificaciones del Sistema
+                        // 5. Notificaciones del Sistema
                         permissionRow(
-                            title: "Notificaciones de macOS",
-                            subtitle: testNotificationSent ? "¡Notificación de prueba enviada con éxito!" : "Envía avisos de inicio y fin de sesiones.",
+                            title: L10n.tr("general.diag.notif.title"),
+                            subtitle: testNotificationSent ? L10n.tr("general.diag.notif.sent") : L10n.tr("general.diag.notif.desc"),
                             icon: "bell.badge.fill",
                             isActive: true,
-                            actionTitle: "Enviar Prueba"
+                            actionTitle: L10n.tr("general.diag.sendTest")
                         ) {
                             NotificationService.shared.sendNotification(
                                 title: "🔔 FocusPanic Activo",
@@ -1066,13 +2003,13 @@ public struct GeneralSettingsView: View {
                             }
                         }
                         
-                        // 4. Control de Procesos (Apps de Mac)
+                        // 6. Control de Procesos (Apps de Mac)
                         permissionRow(
-                            title: "Monitoreo de Aplicaciones (NSRunningApplication)",
-                            subtitle: "Detecta y cierra las aplicaciones distractoras seleccionadas.",
+                            title: L10n.tr("general.diag.apps.title"),
+                            subtitle: L10n.tr("general.diag.apps.desc"),
                             icon: "app.badge.checkmark",
                             isActive: true,
-                            actionTitle: "Verificar"
+                            actionTitle: L10n.tr("general.diag.verify")
                         ) {
                             NSSound(named: "Hero")?.play()
                         }
@@ -1082,22 +2019,123 @@ public struct GeneralSettingsView: View {
                 .background(Color.secondary.opacity(0.04))
                 .cornerRadius(12)
                 
+                // IDIOMA DE LA APLICACIÓN
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Label(L10n.tr("general.lang.title"), systemImage: "globe")
+                            .font(.headline)
+                        Spacer()
+                    }
+                    
+                    Text(L10n.tr("general.lang.desc"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Picker("", selection: Binding(
+                        get: { engine.settings.appLanguage },
+                        set: { engine.setLanguage($0) }
+                    )) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text("\(lang.flag)  \(lang.displayName)").tag(lang)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 320)
+                }
+                .padding(16)
+                .background(Color.secondary.opacity(0.04))
+                .cornerRadius(12)
+                
                 // PREFERENCIAS DEL SISTEMA
                 VStack(alignment: .leading, spacing: 14) {
-                    Label("Preferencias de Uso & Enfoque", systemImage: "slider.horizontal.3")
+                    Label(L10n.tr("general.preferences.title"), systemImage: "slider.horizontal.3")
                         .font(.headline)
                     
-                    Toggle("Sonidos del Sistema", isOn: $engine.settings.isSoundEnabled)
+                    Toggle(L10n.tr("general.pref.sounds"), isOn: $engine.settings.isSoundEnabled)
                         .onChange(of: engine.settings.isSoundEnabled) { _ in engine.saveSettings() }
                     
-                    Toggle("Iniciar FocusPanic al encender el Mac", isOn: $engine.settings.launchAtLogin)
-                        .onChange(of: engine.settings.launchAtLogin) { _ in engine.saveSettings() }
+                    Toggle(L10n.tr("general.pref.launchAtLogin"), isOn: $engine.settings.launchAtLogin)
+                        .onChange(of: engine.settings.launchAtLogin) { newValue in
+                            engine.saveSettings()
+                            LaunchAtLoginService.shared.updateLaunchAtLogin(enabled: newValue)
+                        }
                     
-                    Toggle("Bloquear Terminal y Monitor de Actividad durante Enfoque", isOn: $engine.settings.isBlockDevToolsEnabled)
+                    Toggle(L10n.tr("general.pref.blockDevTools"), isOn: $engine.settings.isBlockDevToolsEnabled)
                         .onChange(of: engine.settings.isBlockDevToolsEnabled) { _ in engine.saveSettings() }
                     
-                    Toggle("Activar Modo 'No Molestar' de macOS automáticamente", isOn: $engine.settings.isAutoDoNotDisturbEnabled)
+                    Toggle(L10n.tr("general.pref.autoDND"), isOn: $engine.settings.isAutoDoNotDisturbEnabled)
                         .onChange(of: engine.settings.isAutoDoNotDisturbEnabled) { _ in engine.saveSettings() }
+                }
+                .padding(16)
+                .background(Color.secondary.opacity(0.04))
+                .cornerRadius(12)
+                
+                // COPIA DE SEGURIDAD & TRANSFERENCIA (IMPORTAR / EXPORTAR)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Label(L10n.tr("backup.title"), systemImage: "arrow.triangle.2.circlepath.circle.fill")
+                            .font(.headline)
+                        Spacer()
+                    }
+                    
+                    Text(L10n.tr("backup.desc"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    if let msg = backupMessage {
+                        HStack(spacing: 8) {
+                            Image(systemName: isBackupSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundColor(isBackupSuccess ? .green : .orange)
+                            Text(msg)
+                                .font(.caption)
+                                .foregroundColor(isBackupSuccess ? .green : .orange)
+                            Spacer()
+                            Button(action: { backupMessage = nil }) {
+                                Image(systemName: "xmark")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(10)
+                        .background(isBackupSuccess ? Color.green.opacity(0.1) : Color.orange.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    
+                    Divider()
+                    
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            engine.exportSettingsToFile { success, message in
+                                isBackupSuccess = success
+                                backupMessage = message
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "square.and.arrow.up.fill")
+                                Text(L10n.tr("backup.btn.export"))
+                            }
+                            .font(.system(size: 12, weight: .medium))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#6366F1"))
+                        
+                        Button(action: {
+                            engine.importSettingsFromFile { success, message in
+                                isBackupSuccess = success
+                                backupMessage = message
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "square.and.arrow.down.fill")
+                                Text(L10n.tr("backup.btn.import"))
+                            }
+                            .font(.system(size: 12, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        
+                        Spacer()
+                    }
                 }
                 .padding(16)
                 .background(Color.secondary.opacity(0.04))
@@ -1106,7 +2144,7 @@ public struct GeneralSettingsView: View {
                 // PROTECCIÓN ANTI-DESINSTALACIÓN
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Label("Protección Anti-Desinstalación", systemImage: "lock.shield.fill")
+                        Label(L10n.tr("uninstall.title"), systemImage: "lock.shield.fill")
                             .font(.headline)
                         Spacer()
                         
@@ -1117,7 +2155,7 @@ public struct GeneralSettingsView: View {
                         .toggleStyle(.switch)
                     }
                     
-                    Text("Bloquea el archivo de FocusPanic en macOS (bandera inmutable del sistema) para evitar que sea arrastrado a la Papelera o eliminado sin la clave de tu compañero.")
+                    Text(L10n.tr("uninstall.desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
@@ -1131,7 +2169,7 @@ public struct GeneralSettingsView: View {
                         }) {
                             HStack(spacing: 6) {
                                 Image(systemName: "trash.fill")
-                                Text("Desinstalar FocusPanic...")
+                                Text(L10n.tr("uninstall.btn"))
                             }
                             .font(.caption)
                             .foregroundColor(.red)
@@ -1146,6 +2184,24 @@ public struct GeneralSettingsView: View {
                 .cornerRadius(12)
             }
             .padding(24)
+        }
+        .onAppear {
+            engine.refreshPermissions()
+            self.helperStatus = HostBlockerService.shared.isHelperInstalled
+            self.dnsFamilyStatus = HostBlockerService.shared.isFamilyDNSActive()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            engine.refreshPermissions()
+            self.helperStatus = HostBlockerService.shared.isHelperInstalled
+            self.dnsFamilyStatus = HostBlockerService.shared.isFamilyDNSActive()
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                engine.refreshPermissions()
+                self.helperStatus = HostBlockerService.shared.isHelperInstalled
+                self.dnsFamilyStatus = HostBlockerService.shared.isFamilyDNSActive()
+            }
         }
         .sheet(isPresented: $isShowingUninstallSheet) {
             uninstallSheetContent
@@ -1225,7 +2281,7 @@ public struct GeneralSettingsView: View {
                         .font(.subheadline)
                         .fontWeight(.semibold)
                     
-                    Text(isActive ? "ACTIVO" : "PENDIENTE")
+                    Text(isActive ? L10n.tr("common.active") : (LocalizationService.shared.currentLanguage == .english ? "PENDING" : "PENDIENTE"))
                         .font(.system(size: 8, weight: .bold))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1.5)

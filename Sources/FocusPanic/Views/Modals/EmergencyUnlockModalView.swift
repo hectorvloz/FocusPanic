@@ -4,8 +4,6 @@ public struct EmergencyUnlockModalView: View {
     @ObservedObject var engine = FocusEngine.shared
     @State private var isSuccess = false
     @State private var breathingPhase = false
-    @State private var isUsingSecurityQuestion = false
-    @State private var enteredSecurityAnswer = ""
     
     public var body: some View {
         VStack(spacing: 18) {
@@ -134,7 +132,7 @@ public struct EmergencyUnlockModalView: View {
         .buttonStyle(.plain)
     }
     
-    // MARK: - MODO 1: Clave del Compañero (PIN o Pregunta Secreta)
+    // MARK: - MODO 1: Clave del Compañero (PIN Obligatorio)
     private var companionInstantUnlockView: some View {
         VStack(spacing: 16) {
             HStack(spacing: 10) {
@@ -143,105 +141,59 @@ public struct EmergencyUnlockModalView: View {
                     .foregroundColor(.orange)
                 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Desbloqueo por Compañero")
+                    Text("Autorización del Compañero")
                         .font(.subheadline)
                         .fontWeight(.bold)
-                    Text("Tu compañero introduce su PIN o responde su pregunta secreta.")
+                    Text("Tu compañero debe autorizar el desbloqueo ingresando su PIN.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                
-                if !engine.settings.securityAnswer.isEmpty {
-                    Button(action: {
-                        withAnimation {
-                            isUsingSecurityQuestion.toggle()
-                        }
-                    }) {
-                        Text(isUsingSecurityQuestion ? "Usar PIN" : "Usar Pregunta")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
             }
             .padding(10)
             .background(Color.orange.opacity(0.08))
             .cornerRadius(10)
             
-            if isUsingSecurityQuestion {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Pregunta Secreta:")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                    
-                    Text("\"\(engine.settings.securityQuestion)\"")
-                        .font(.subheadline)
-                        .foregroundColor(.primary)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.06))
-                        .cornerRadius(8)
-                    
-                    SecureField("Respuesta Secreta", text: $enteredSecurityAnswer)
-                        .textFieldStyle(.roundedBorder)
-                    
-                    HStack {
-                        Button("Cancelar") {
-                            engine.cancelEmergencyUnlock()
-                        }
-                        Spacer()
-                        Button("Desbloquear") {
-                            let _ = engine.unlockWithSecurityAnswer(enteredSecurityAnswer)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.orange)
-                        .disabled(enteredSecurityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
+            PasscodeKeypadView(
+                pin: $engine.enteredMasterPassword,
+                maxDigits: max(4, engine.settings.masterCompanionPassword.count),
+                title: "",
+                subtitle: "",
+                tintColor: .orange,
+                showKeypad: true,
+                isSuccess: isSuccess,
+                errorMessage: nil,
+                onComplete: { _ in
+                    verifyAndUnlock()
                 }
-                .padding(10)
-            } else {
-                PasscodeKeypadView(
-                    pin: $engine.enteredMasterPassword,
-                    maxDigits: max(4, engine.settings.masterCompanionPassword.count),
-                    title: "",
-                    subtitle: "",
-                    tintColor: .orange,
-                    showKeypad: true,
-                    isSuccess: isSuccess,
-                    errorMessage: nil,
-                    onComplete: { _ in
-                        verifyAndUnlock()
-                    }
-                )
+            )
+            
+            HStack(spacing: 12) {
+                Button("Cancelar") {
+                    engine.cancelEmergencyUnlock()
+                }
+                .keyboardShortcut(.cancelAction)
                 
-                HStack(spacing: 12) {
-                    Button("Cancelar") {
-                        engine.cancelEmergencyUnlock()
+                Spacer()
+                
+                Button(action: { verifyAndUnlock() }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "bolt.fill")
+                        Text("Desactivar Bloqueo")
                     }
-                    .keyboardShortcut(.cancelAction)
-                    
-                    Spacer()
-                    
-                    Button(action: { verifyAndUnlock() }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "bolt.fill")
-                            Text("Desactivar Bloqueo")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.orange)
-                    .disabled(engine.enteredMasterPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .keyboardShortcut(.defaultAction)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .disabled(engine.enteredMasterPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
             }
         }
     }
     
     private func verifyAndUnlock() {
         let clean = engine.enteredMasterPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        if clean == engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines) || clean == "1234" {
+        let master = engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !master.isEmpty && clean == master {
             isSuccess = true
             NSSound(named: "Hero")?.play()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

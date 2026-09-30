@@ -8,7 +8,6 @@ public struct WebBlockListView: View {
     
     // Individual
     @State private var newDomain = ""
-    @State private var newName = ""
     @State private var selectedCategory: WebsiteCategory = .custom
     
     // En Lote
@@ -18,20 +17,27 @@ public struct WebBlockListView: View {
     // Filtros y búsqueda
     @State private var searchText = ""
     @State private var selectedCategoryFilter: WebsiteCategory? = nil
+    @State private var expandedCategories: Set<WebsiteCategory> = []
     
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             // Cabecera
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Bloqueo de Sitios Web")
+                    Text(L10n.tr("webblock.title"))
                         .font(.title2)
                         .fontWeight(.bold)
                     
                     let activeCount = engine.settings.blockedWebsites.filter { $0.isEnabled }.count
-                    Text("\(activeCount) sitios activos + Escudo Anti-Porn (+180 sitios)")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                    if engine.settings.isAlwaysBlockAdultSites {
+                        Text(String(format: L10n.tr("webblock.subtitle.withAdult"), activeCount))
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text(String(format: L10n.tr("webblock.subtitle.normal"), activeCount))
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
                 Spacer()
@@ -41,7 +47,7 @@ public struct WebBlockListView: View {
                         isAddingDomain.toggle()
                     }
                 }) {
-                    Label(isAddingDomain ? "Ocultar" : "Añadir Sitios", systemImage: isAddingDomain ? "chevron.up" : "plus")
+                    Label(isAddingDomain ? L10n.tr("common.hide") : L10n.tr("webblock.btn.add"), systemImage: isAddingDomain ? "chevron.up" : "plus")
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
                 }
@@ -55,12 +61,13 @@ public struct WebBlockListView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
             
-            // Barra de búsqueda y filtro
+            // Barra de búsqueda y filtro con altura y alineación homogénea
             HStack(spacing: 10) {
-                HStack {
+                // 1. Campo de Búsqueda
+                HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
-                    TextField("Buscar sitio...", text: $searchText)
+                    TextField(L10n.tr("webblock.search.placeholder"), text: $searchText)
                         .textFieldStyle(.plain)
                     if !searchText.isEmpty {
                         Button(action: { searchText = "" }) {
@@ -70,30 +77,49 @@ public struct WebBlockListView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(8)
+                .frame(height: 32)
+                .padding(.horizontal, 10)
                 .background(Color.secondary.opacity(0.08))
                 .cornerRadius(8)
                 
-                Picker("Categoría", selection: $selectedCategoryFilter) {
-                    Text("Todas").tag(WebsiteCategory?.none)
-                    ForEach(WebsiteCategory.allCases) { cat in
-                        Text(cat.rawValue).tag(WebsiteCategory?.some(cat))
+                // 2. Selector de Categoría (con fondo y altura idéntica)
+                HStack(spacing: 6) {
+                    Text(L10n.tr("webblock.category"))
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    Picker("", selection: $selectedCategoryFilter) {
+                        Text(L10n.tr("common.all")).tag(WebsiteCategory?.none)
+                        ForEach(WebsiteCategory.allCases) { cat in
+                            Text(cat.localizedName).tag(WebsiteCategory?.some(cat))
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 120)
                 }
-                .frame(width: 150)
+                .frame(height: 32)
+                .padding(.horizontal, 10)
+                .background(Color.secondary.opacity(0.08))
+                .cornerRadius(8)
                 
+                // 3. Botón Desactivar / Activar Todos (con fondo y altura idéntica)
                 let allEnabled = engine.settings.blockedWebsites.allSatisfy { $0.isEnabled }
                 Button(action: {
                     engine.toggleAllWebsites(enabled: !allEnabled)
                 }) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 6) {
                         Image(systemName: allEnabled ? "xmark.circle" : "checkmark.circle")
-                        Text(allEnabled ? "Desactivar Todos" : "Activar Todos")
+                        Text(allEnabled ? L10n.tr("common.disableAll") : L10n.tr("common.enableAll"))
                     }
-                    .font(.caption)
-                    .fontWeight(.semibold)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .frame(height: 32)
+                    .padding(.horizontal, 12)
+                    .background(Color.secondary.opacity(0.08))
+                    .cornerRadius(8)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
             }
             
             // Listado de Sitios Web con ScrollView y LazyVStack de Ultra-Alto Rendimiento (Sin Lag)
@@ -102,17 +128,47 @@ public struct WebBlockListView: View {
                     ForEach(visibleCategories) { category in
                         let items = filteredItems(for: category)
                         if !items.isEmpty {
+                            let isExpanded = expandedCategories.contains(category) || items.count <= 10
+                            let displayedItems = isExpanded ? items : Array(items.prefix(10))
+                            
                             VStack(alignment: .leading, spacing: 8) {
                                 categoryHeader(category: category, items: items)
                                 
                                 VStack(spacing: 4) {
-                                    ForEach(items) { site in
+                                    ForEach(displayedItems) { site in
                                         siteRow(site: site)
                                     }
                                 }
                                 .padding(8)
                                 .background(Color.secondary.opacity(0.04))
                                 .cornerRadius(10)
+                                
+                                if items.count > 10 {
+                                    Button(action: {
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                            if expandedCategories.contains(category) {
+                                                expandedCategories.remove(category)
+                                            } else {
+                                                expandedCategories.insert(category)
+                                            }
+                                        }
+                                    }) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                            Text(isExpanded
+                                                 ? (LocalizationService.shared.currentLanguage == .english ? "Show less" : "Ver menos sitios")
+                                                 : (LocalizationService.shared.currentLanguage == .english ? "Show more (\(items.count - 10) additional)" : "Ver más sitios (\(items.count - 10) adicionales)"))
+                                        }
+                                        .font(.caption)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(Color(hex: category.colorHex))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 6)
+                                        .background(Color(hex: category.colorHex).opacity(0.08))
+                                        .cornerRadius(8)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                         }
                     }
@@ -122,7 +178,7 @@ public struct WebBlockListView: View {
             
             // Pie de página
             HStack {
-                Button("Restablecer Sitios Predeterminados") {
+                Button(L10n.tr("webblock.reset.defaults")) {
                     engine.settings.blockedWebsites = AppSettings.defaultWebsites
                     engine.saveSettings()
                 }
@@ -138,44 +194,47 @@ public struct WebBlockListView: View {
     
     private var addWebsitesCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker("Modo de Adición", selection: $addMode) {
-                Text("Individual").tag(0)
-                Text("Varios Sitios").tag(1)
+            Picker("", selection: $addMode) {
+                Text(L10n.tr("webblock.add.single")).tag(0)
+                Text(L10n.tr("webblock.add.batch")).tag(1)
             }
             .pickerStyle(.segmented)
             
             if addMode == 0 {
                 VStack(spacing: 10) {
                     HStack(spacing: 10) {
-                        TextField("Nombre (ej. Reddit)", text: $newName)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: .infinity)
-                        
-                        TextField("Dominio (ej. reddit.com)", text: $newDomain)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: .infinity)
+                        HStack(spacing: 6) {
+                            Image(systemName: "globe")
+                                .foregroundColor(.secondary)
+                            TextField(L10n.tr("webblock.add.single.placeholder"), text: $newDomain)
+                                .textFieldStyle(.plain)
+                                .onSubmit { saveSingleDomain() }
+                        }
+                        .frame(height: 32)
+                        .padding(.horizontal, 10)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(8)
                     }
                     
                     HStack(spacing: 12) {
-                        Picker("Categoría:", selection: $selectedCategory) {
+                        Picker(L10n.tr("webblock.category") + ":", selection: $selectedCategory) {
                             ForEach(WebsiteCategory.allCases) { cat in
-                                Text(cat.rawValue).tag(cat)
+                                Text(cat.localizedName).tag(cat)
                             }
                         }
                         .frame(width: 240)
                         
                         Spacer()
                         
-                        Button("Cancelar") {
+                        Button(L10n.tr("common.cancel")) {
                             isAddingDomain = false
                             newDomain = ""
-                            newName = ""
                         }
                         .buttonStyle(.plain)
                         .font(.caption)
                         .foregroundColor(.secondary)
                         
-                        Button("Guardar Sitio") {
+                        Button(L10n.tr("webblock.add.btn.block")) {
                             saveSingleDomain()
                         }
                         .buttonStyle(.borderedProminent)
@@ -184,7 +243,7 @@ public struct WebBlockListView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Pega varios dominios (uno por línea o separados por comas):")
+                    Text(L10n.tr("webblock.add.batch.hint"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
@@ -196,16 +255,16 @@ public struct WebBlockListView: View {
                         .cornerRadius(6)
                     
                     HStack {
-                        Picker("Categoría:", selection: $batchCategory) {
+                        Picker(L10n.tr("webblock.category") + ":", selection: $batchCategory) {
                             ForEach(WebsiteCategory.allCases) { cat in
-                                Text(cat.rawValue).tag(cat)
+                                Text(cat.localizedName).tag(cat)
                             }
                         }
                         .frame(width: 220)
                         
                         Spacer()
                         
-                        Button("Cancelar") {
+                        Button(L10n.tr("common.cancel")) {
                             isAddingDomain = false
                             batchText = ""
                         }
@@ -213,7 +272,7 @@ public struct WebBlockListView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                         
-                        Button("Añadir Varios Sitios") {
+                        Button(L10n.tr("webblock.add.batch.btn")) {
                             processBatchDomains()
                         }
                         .buttonStyle(.borderedProminent)
@@ -235,19 +294,21 @@ public struct WebBlockListView: View {
     }
     
     private func filteredItems(for category: WebsiteCategory) -> [BlockedWebsite] {
-        engine.settings.blockedWebsites.filter { site in
-            site.category == category &&
-            (searchText.isEmpty ||
-             site.domain.localizedCaseInsensitiveContains(searchText) ||
-             site.name.localizedCaseInsensitiveContains(searchText))
-        }
+        engine.settings.blockedWebsites
+            .filter { site in
+                site.category == category &&
+                (searchText.isEmpty ||
+                 site.domain.localizedCaseInsensitiveContains(searchText) ||
+                 site.name.localizedCaseInsensitiveContains(searchText))
+            }
+            .sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
     }
     
     private func categoryHeader(category: WebsiteCategory, items: [BlockedWebsite]) -> some View {
         HStack {
             Image(systemName: category.iconName)
                 .foregroundColor(Color(hex: category.colorHex))
-            Text(category.rawValue)
+            Text(category.localizedName)
                 .fontWeight(.bold)
             
             Text("(\(items.count))")
@@ -257,7 +318,7 @@ public struct WebBlockListView: View {
             Spacer()
             
             let allEnabled = items.allSatisfy { $0.isEnabled }
-            Button(allEnabled ? "Desactivar Todos" : "Activar Todos") {
+            Button(allEnabled ? L10n.tr("common.disableAll") : L10n.tr("common.enableAll")) {
                 for item in items {
                     if let index = engine.settings.blockedWebsites.firstIndex(where: { $0.id == item.id }) {
                         engine.settings.blockedWebsites[index].isEnabled = !allEnabled
@@ -295,18 +356,16 @@ public struct WebBlockListView: View {
             
             Spacer()
             
-            if site.isCustom {
-                Button(action: {
-                    engine.settings.blockedWebsites.removeAll { $0.id == site.id }
-                    engine.saveSettings()
-                }) {
-                    Image(systemName: "trash")
-                        .font(.caption)
-                        .foregroundColor(.red.opacity(0.7))
-                }
-                .buttonStyle(.plain)
-                .padding(.trailing, 6)
+            Button(action: {
+                engine.removeBlockedWebsite(id: site.id)
+            }) {
+                Image(systemName: "trash")
+                    .font(.caption)
+                    .foregroundColor(.red.opacity(0.7))
             }
+            .buttonStyle(.plain)
+            .padding(.trailing, 6)
+            .help("Eliminar este sitio")
             
             Toggle("", isOn: Binding(
                 get: { site.isEnabled },
@@ -342,9 +401,7 @@ public struct WebBlockListView: View {
         let domain = cleanDomainString(newDomain)
         guard !domain.isEmpty else { return }
         
-        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? domain.capitalized
-            : newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = FocusEngine.cleanDomainToName(domain)
         
         if !engine.settings.blockedWebsites.contains(where: { $0.domain.lowercased() == domain }) {
             let newSite = BlockedWebsite(
@@ -359,7 +416,6 @@ public struct WebBlockListView: View {
         }
         
         newDomain = ""
-        newName = ""
         isAddingDomain = false
     }
     

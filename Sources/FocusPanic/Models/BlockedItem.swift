@@ -33,12 +33,25 @@ public enum FocusBlockingMode: String, Codable, CaseIterable, Identifiable {
     
     public var id: String { rawValue }
     
+    public var localizedName: String {
+        switch self {
+        case .selective:
+            return LocalizationService.shared.currentLanguage == .english ? "Selective Blocking" : "Bloqueo Selectivo"
+        case .whitelistOnly:
+            return LocalizationService.shared.currentLanguage == .english ? "Total Lockdown (Whitelist Only)" : "Bloqueo Total (Solo Lista Blanca)"
+        }
+    }
+    
     public var subtitle: String {
         switch self {
         case .selective:
-            return "Bloquea las distracciones seleccionadas en tus listas."
+            return LocalizationService.shared.currentLanguage == .english
+                ? "Blocks selected distracting items in your lists."
+                : "Bloquea las distracciones seleccionadas en tus listas."
         case .whitelistOnly:
-            return "Bloquea TODO Internet y apps excepto tu Lista Blanca de trabajo."
+            return LocalizationService.shared.currentLanguage == .english
+                ? "Blocks ALL internet and apps except your work Whitelist."
+                : "Bloquea TODO Internet y apps excepto tu Lista Blanca de trabajo."
         }
     }
     
@@ -60,6 +73,18 @@ public enum WebsiteCategory: String, Codable, CaseIterable, Identifiable {
     case custom = "Personalizados"
 
     public var id: String { rawValue }
+    
+    public var localizedName: String {
+        switch self {
+        case .productivity: return L10n.tr("cat.productivity")
+        case .social: return L10n.tr("cat.social")
+        case .video: return L10n.tr("cat.video")
+        case .news: return L10n.tr("cat.news")
+        case .gaming: return L10n.tr("cat.gaming")
+        case .shopping: return L10n.tr("cat.shopping")
+        case .custom: return L10n.tr("cat.custom")
+        }
+    }
 
     public var iconName: String {
         switch self {

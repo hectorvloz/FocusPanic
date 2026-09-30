@@ -14,6 +14,7 @@ public struct PasscodeKeypadView: View {
     
     @State private var showPlain = false
     @State private var shakeOffset: CGFloat = 0
+    @State private var eventMonitor: Any? = nil
     @FocusState private var isInputFocused: Bool
     
     public init(
@@ -177,7 +178,48 @@ public struct PasscodeKeypadView: View {
             }
         }
         .onAppear {
-            isInputFocused = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                isInputFocused = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                isInputFocused = true
+            }
+            
+            // Monitor local de eventos de teclado físico (captura directa de números sin requerir clic)
+            if eventMonitor == nil {
+                eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    guard !isSuccess else { return event }
+                    
+                    if let chars = event.characters, !chars.isEmpty {
+                        // Dígitos 0-9
+                        if let first = chars.first, first.isNumber {
+                            appendDigit(String(first))
+                            return nil // Evento consumido
+                        }
+                        
+                        // Tecla Borrar / Backspace
+                        if event.keyCode == 51 {
+                            deleteDigit()
+                            return nil // Evento consumido
+                        }
+                        
+                        // Tecla Enter / Return
+                        if event.keyCode == 36 || event.keyCode == 76 {
+                            if pin.count >= maxDigits {
+                                onComplete?(pin)
+                                return nil
+                            }
+                        }
+                    }
+                    return event
+                }
+            }
+        }
+        .onDisappear {
+            if let monitor = eventMonitor {
+                NSEvent.removeMonitor(monitor)
+                eventMonitor = nil
+            }
         }
     }
     

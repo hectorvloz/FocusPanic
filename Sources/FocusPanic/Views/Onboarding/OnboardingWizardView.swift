@@ -9,6 +9,7 @@ public struct OnboardingWizardView: View {
     @State private var helperError: String?
     @State private var isInstallingHelper: Bool = false
     @State private var safariAuthorized: Bool = false
+    @State private var accessibilityAuthorized: Bool = false
     @State private var showCompanionPassword = false
     
     public var body: some View {
@@ -53,8 +54,21 @@ public struct OnboardingWizardView: View {
         .onAppear {
             helperInstalled = HostBlockerService.shared.isHelperInstalled
             checkSafariPermissionSilently()
+            checkAccessibilityPermissionSilently()
         }
-        .interactiveDismissDisabled(!HostBlockerService.shared.isHelperInstalled)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            checkAccessibilityPermissionSilently()
+            checkSafariPermissionSilently()
+            helperInstalled = HostBlockerService.shared.isHelperInstalled
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                checkAccessibilityPermissionSilently()
+                helperInstalled = HostBlockerService.shared.isHelperInstalled
+            }
+        }
+        .interactiveDismissDisabled(true)
     }
     
     // MARK: - Barra de Progreso (6 Pasos)
@@ -228,60 +242,125 @@ public struct OnboardingWizardView: View {
         }
     }
     
-    // MARK: - Paso 4: Automatización de Safari (Nuevo Paso)
+    // MARK: - Paso 4: Permisos de Sistema (Accesibilidad & Navegadores)
     private var safariAutomationStepView: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            ZStack {
-                Circle()
-                    .fill(Color.purple.opacity(0.15))
-                    .frame(width: 72, height: 72)
-                Image(systemName: "safari.fill")
-                    .font(.system(size: 34))
-                    .foregroundColor(.purple)
-            }
-            VStack(spacing: 4) {
-                Text("Paso 3: Automatización de Safari")
-                    .font(.title2).fontWeight(.bold)
-                Text("Permite que FocusPanic intercepte pestañas activas en Safari y las redirija a la pantalla de Pausa Consciente.")
-                    .font(.subheadline).foregroundColor(.secondary)
-                    .multilineTextAlignment(.center).frame(maxWidth: 520)
-            }
-            
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Image(systemName: "arrow.triangle.turn.up.right.diamond.fill").foregroundColor(.purple)
-                    Text("Cierra o redirige al instante páginas como TikTok, Instagram o Facebook").font(.caption)
+        ScrollView {
+            VStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .fill(Color.purple.opacity(0.15))
+                        .frame(width: 72, height: 72)
+                    Image(systemName: "hand.raised.square.fill")
+                        .font(.system(size: 34))
+                        .foregroundColor(.purple)
                 }
-                HStack(spacing: 10) {
-                    Image(systemName: "bolt.fill").foregroundColor(.orange)
-                    Text("Corta conexiones multimedia activas y transmisiones de video en segundo plano").font(.caption)
+                
+                VStack(spacing: 4) {
+                    Text("Paso 4: Permisos de Accesibilidad & Navegadores")
+                        .font(.title2).fontWeight(.bold)
+                    Text("Estos permisos permiten que FocusPanic bloquee distracciones avanzadas como historias de WhatsApp y pestañas de incógnito.")
+                        .font(.subheadline).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center).frame(maxWidth: 520)
                 }
-                HStack(spacing: 10) {
-                    Image(systemName: "hand.raised.fill").foregroundColor(.green)
-                    Text("Solo actúa sobre los sitios que tengas marcados en tu lista de bloqueo").font(.caption)
+                
+                VStack(spacing: 12) {
+                    // 1. Permiso de Accesibilidad (WhatsApp & Modo Incógnito)
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(Color(hex: "#25D366").opacity(0.15))
+                                .frame(width: 40, height: 40)
+                            Image(systemName: "figure.walk.motion")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(Color(hex: "#25D366"))
+                        }
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text("1. Permiso de Accesibilidad de macOS")
+                                    .font(.subheadline)
+                                    .fontWeight(.bold)
+                                if accessibilityAuthorized {
+                                    Text("CONCEDIDO ✓")
+                                        .font(.system(size: 8, weight: .black))
+                                        .foregroundColor(.green)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Capsule().fill(Color.green.opacity(0.15)))
+                                }
+                            }
+                            Text("Imprescindible para interceptar Estados/Canales en WhatsApp y cerrar ventanas privadas en navegadores.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Button(action: { requestAccessibilityPermission() }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: accessibilityAuthorized ? "checkmark.circle.fill" : "lock.open.fill")
+                                Text(accessibilityAuthorized ? "Autorizado" : "Autorizar")
+                            }
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(accessibilityAuthorized ? .green : Color(hex: "#25D366"))
+                    }
+                    .padding(12)
+                    .background(Color.secondary.opacity(0.06))
+                    .cornerRadius(12)
+                    
+                    // 2. Control de Automatización de Safari & Navegadores
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.purple.opacity(0.15))
+                                .frame(width: 40, height: 40)
+                            Image(systemName: "safari.fill")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.purple)
+                        }
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text("2. Automatización de Safari & Web")
+                                    .font(.subheadline)
+                                    .fontWeight(.bold)
+                                if safariAuthorized {
+                                    Text("CONCEDIDO ✓")
+                                        .font(.system(size: 8, weight: .black))
+                                        .foregroundColor(.green)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Capsule().fill(Color.green.opacity(0.15)))
+                                }
+                            }
+                            Text("Permite redirigir pestañas bloqueadas a la pantalla de Pausa Consciente.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Button(action: { requestSafariAutomationPermission() }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: safariAuthorized ? "checkmark.circle.fill" : "hand.point.up.left.fill")
+                                Text(safariAuthorized ? "Autorizado" : "Probar")
+                            }
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(safariAuthorized ? .green : .purple)
+                    }
+                    .padding(12)
+                    .background(Color.secondary.opacity(0.06))
+                    .cornerRadius(12)
                 }
+                .frame(maxWidth: 520)
             }
-            .padding(12)
-            .frame(maxWidth: 500, alignment: .leading)
-            .background(Color.secondary.opacity(0.06))
-            .cornerRadius(12)
-            
-            Button(action: { requestSafariAutomationPermission() }) {
-                HStack(spacing: 8) {
-                    Image(systemName: safariAuthorized ? "checkmark.circle.fill" : "hand.point.up.left.and.text.fill")
-                    Text(safariAuthorized ? "Control de Safari Autorizado ✓" : "Probar y Autorizar Control de Safari")
-                }
-                .font(.headline).padding(.vertical, 10).padding(.horizontal, 18)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(safariAuthorized ? .green : .purple)
-            
-            if safariAuthorized {
-                Text("FocusPanic ya tiene permiso para interceptar pestañas en Safari.")
-                    .font(.caption).foregroundColor(.green)
-            }
-            Spacer()
+            .padding(.vertical, 8)
         }
     }
     
@@ -292,11 +371,20 @@ public struct OnboardingWizardView: View {
     @State private var pinError: String? = nil
     @State private var pinConfirmed: Bool = false
     
+    private var isRecoveryMethodValid: Bool {
+        if engine.settings.recoveryMethod == "question" {
+            return !engine.settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } else {
+            let email = engine.settings.recoveryEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !email.isEmpty && email.contains("@") && email.contains(".")
+        }
+    }
+    
     private var companionSetupStepView: some View {
         ScrollView {
             VStack(alignment: .center, spacing: 18) {
                 VStack(spacing: 4) {
-                    Text("Paso 4: Clave Secreta del Compañero (PIN)")
+                    Text("Paso 5: Clave Secreta del Compañero (PIN)")
                         .font(.title2).fontWeight(.bold)
                     Text("Pídele a tu compañero que cree una clave de 4 dígitos para emergencias.")
                         .font(.subheadline).foregroundColor(.secondary)
@@ -442,7 +530,7 @@ public struct OnboardingWizardView: View {
                             }
                             .pickerStyle(.menu)
                             
-                            SecureField("Respuesta Secreta", text: $engine.settings.securityAnswer)
+                            SecureField("Respuesta Secreta (Obligatorio)", text: $engine.settings.securityAnswer)
                                 .textFieldStyle(.roundedBorder)
                             
                             Text("Tu compañero podrá responder a esta pregunta si se olvida el PIN.")
@@ -455,7 +543,7 @@ public struct OnboardingWizardView: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                             
-                            TextField("ej. compañero@gmail.com", text: $engine.settings.recoveryEmail)
+                            TextField("ej. compañero@gmail.com (Obligatorio)", text: $engine.settings.recoveryEmail)
                                 .textFieldStyle(.roundedBorder)
                             
                             Text("Se enviará un código a este correo para desbloquear en caso de emergencia.")
@@ -479,6 +567,30 @@ public struct OnboardingWizardView: View {
                     }
                     .padding(8)
                     .background(Color.orange.opacity(0.1))
+                    .cornerRadius(8)
+                } else if !isRecoveryMethodValid {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text(engine.settings.recoveryMethod == "question"
+                             ? "Paso obligatorio: Escribe la respuesta a la pregunta secreta para continuar."
+                             : "Paso obligatorio: Ingresa un correo electrónico de respaldo válido.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                    .padding(8)
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(8)
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("¡PIN y método de respaldo listos para continuar!")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
+                    .padding(8)
+                    .background(Color.green.opacity(0.1))
                     .cornerRadius(8)
                 }
             }
@@ -506,7 +618,7 @@ public struct OnboardingWizardView: View {
                 }
                 HStack(spacing: 10) {
                     Image(systemName: "hand.raised.slash.fill").foregroundColor(Color(hex: "#E11D48"))
-                    Text("Escudo Anti-Porn (+180 sitios para adultos) activo.").font(.subheadline)
+                    Text("Escudo Anti-Porn (+1,000 sitios para adultos) activo.").font(.subheadline)
                 }
                 HStack(spacing: 10) {
                     Image(systemName: "bolt.shield.fill").foregroundColor(.green)
@@ -535,7 +647,7 @@ public struct OnboardingWizardView: View {
             if currentStep < 6 {
                 let isStepBlocked: Bool = {
                     if currentStep == 3 && !helperInstalled { return true }
-                    if currentStep == 5 && !pinConfirmed { return true }
+                    if currentStep == 5 && (!pinConfirmed || !isRecoveryMethodValid) { return true }
                     return false
                 }()
                 
@@ -544,9 +656,18 @@ public struct OnboardingWizardView: View {
                         helperError = "Debes instalar el motor de bloqueo antes de continuar."
                         return
                     }
-                    if currentStep == 5 && !pinConfirmed {
-                        pinError = "Tu compañero debe registrar y confirmar el PIN de 4 dígitos para continuar."
-                        return
+                    if currentStep == 5 {
+                        if !pinConfirmed {
+                            pinError = "Tu compañero debe registrar y confirmar el PIN de 4 dígitos para continuar."
+                            return
+                        }
+                        if !isRecoveryMethodValid {
+                            pinError = engine.settings.recoveryMethod == "question"
+                                ? "Debes escribir una respuesta a la pregunta secreta de respaldo."
+                                : "Debes ingresar un correo electrónico de respaldo válido."
+                            return
+                        }
+                        engine.saveSettings()
                     }
                     withAnimation { currentStep += 1 }
                 }) {
@@ -594,6 +715,25 @@ public struct OnboardingWizardView: View {
                     self.helperError = "Error: \(error.localizedDescription). Inténtalo de nuevo."
                 }
             }
+        }
+    }
+    
+    private func checkAccessibilityPermissionSilently() {
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false]
+        self.accessibilityAuthorized = AXIsProcessTrustedWithOptions(options)
+    }
+    
+    private func requestAccessibilityPermission() {
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        self.accessibilityAuthorized = AXIsProcessTrustedWithOptions(options)
+        
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+        
+        // Re-verificar en segundo plano tras volver de Ajustes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.checkAccessibilityPermissionSilently()
         }
     }
     

@@ -5,12 +5,9 @@ struct FocusPanicApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
-        WindowGroup {
-            MainDashboardView()
-                .frame(minWidth: 720, minHeight: 580)
+        Settings {
+            EmptyView()
         }
-        .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("Acerca de FocusPanic") {

@@ -2,6 +2,25 @@ import Combine
 import Foundation
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
+
+public struct PendingPartnerOTP {
+    public let code: String
+    public let site: String
+    public let minutes: Int
+    public let createdAt: Date
+    public let expiresAt: Date
+    public var isUsed: Bool
+    
+    public init(code: String, site: String, minutes: Int, createdAt: Date = Date(), expiresAt: Date, isUsed: Bool = false) {
+        self.code = code
+        self.site = site
+        self.minutes = minutes
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt
+        self.isUsed = isUsed
+    }
+}
 
 @MainActor
 public final class FocusEngine: ObservableObject {
@@ -10,6 +29,7 @@ public final class FocusEngine: ObservableObject {
     // MARK: - Published Properties
     @Published public var settings: AppSettings
     @Published public var isShowingOnboarding: Bool = false
+    @Published public var isAccessibilityTrusted: Bool = AXIsProcessTrusted()
     @Published public var currentSession: FocusSession?
     @Published public var sessionStatus: SessionStatus = .idle
     @Published public var remainingSeconds: TimeInterval = 0
@@ -46,6 +66,12 @@ public final class FocusEngine: ObservableObject {
     // Timer interno
     private var sessionTimer: AnyCancellable?
     private var delayTimer: AnyCancellable?
+    private var alertedPartnerLimitsToday: Set<String> = []
+    
+    // Control de Códigos OTP y Bypass Temporal
+    private var pendingPartnerOTPs: [String: PendingPartnerOTP] = [:]
+    @Published public var temporaryBypasses: [String: Date] = [:]
+    private var temporaryBypassTimers: [String: DispatchWorkItem] = [:]
     
     private let settingsKey = "FocusPanic_AppSettings_v2"
     private let sessionKey = "FocusPanic_ActiveSession_v2"
@@ -54,15 +80,22 @@ public final class FocusEngine: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: settingsKey),
            let decoded = try? JSONDecoder().decode(AppSettings.self, from: data) {
             self.settings = decoded
+            // Si el usuario ya tiene datos o clave guardada, marcar onboarding completado permanentemente
+            if !decoded.masterCompanionPassword.isEmpty || decoded.hasCompletedOnboarding {
+                self.settings.hasCompletedOnboarding = true
+            }
         } else {
             self.settings = AppSettings()
         }
         
+        // Sincronizar idioma de la interfaz
+        LocalizationService.shared.setLanguage(self.settings.appLanguage)
+        
         self.cleanLegacyAdultSites()
         self.ensureDefaultWebsitesPresent()
         
-        // Mostrar onboarding si NO se ha completado O si el helper NO está instalado
-        if !self.settings.hasCompletedOnboarding || !HostBlockerService.shared.isHelperInstalled {
+        // Mostrar onboarding ÚNICAMENTE si el usuario NO lo ha completado antes
+        if !self.settings.hasCompletedOnboarding {
             self.isShowingOnboarding = true
         }
         
@@ -71,16 +104,88 @@ public final class FocusEngine: ObservableObject {
         // Iniciar servidor local de página de intervención motivacional
         LocalInterventionServer.shared.start()
         
+        // Iniciar vigilante de Estados y Canales de WhatsApp
+        WhatsAppStatusWatcherService.shared.start(
+            isStatusEnabled: self.settings.isWhatsAppStatusBlockerEnabled,
+            isChannelsEnabled: self.settings.isWhatsAppChannelsBlockerEnabled
+        )
+        
         // Aplicar protección permanente al iniciar si no hay sesión activa
         if currentSession == nil {
             applyPermanentProtectionOnly()
         }
+        
+        // Iniciar programador automático de reportes semanales al compañero
+        schedulePeriodicWeeklyReportChecker()
+    }
+    
+    // MARK: - Programador Automático de Reportes Semanales
+    
+    private var periodicWeeklyTimer: AnyCancellable?
+    
+    private func schedulePeriodicWeeklyReportChecker() {
+        periodicWeeklyTimer?.cancel()
+        
+        // Ejecutar verificación suave a los 5 segundos de abrir la app
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            self?.checkAndSendAutomaticWeeklyReportIfNeeded()
+        }
+        
+        // Y verificar periódicamente cada hora en segundo plano
+        periodicWeeklyTimer = Timer.publish(every: 3600, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.checkAndSendAutomaticWeeklyReportIfNeeded()
+            }
+    }
+    
+    public func checkAndSendAutomaticWeeklyReportIfNeeded() {
+        guard settings.isWeeklyReportEnabled else { return }
+        let partner = settings.officialPartnerEmail
+        guard !partner.isEmpty else { return }
+        
+        let now = Date()
+        let calendar = Calendar.current
+        
+        var shouldSend = false
+        if let lastDate = settings.lastWeeklyReportDate {
+            let daysPassed = calendar.dateComponents([.day], from: calendar.startOfDay(for: lastDate), to: calendar.startOfDay(for: now)).day ?? 0
+            if daysPassed >= 7 {
+                shouldSend = true
+            }
+        } else {
+            // Primer registro
+            settings.lastWeeklyReportDate = now
+            saveSettings()
+            return
+        }
+        
+        if shouldSend {
+            EmailService.shared.sendWeeklyPartnerReport(
+                toEmail: partner,
+                stats: FocusStatsManager.shared.stats,
+                statsManager: FocusStatsManager.shared
+            ) { [weak self] result in
+                if case .success = result {
+                    DispatchQueue.main.async {
+                        self?.settings.lastWeeklyReportDate = Date()
+                        self?.saveSettings()
+                    }
+                }
+            }
+        }
     }
     
     public func checkPermissionsOnLaunch() {
-        if !HostBlockerService.shared.isHelperInstalled {
+        refreshPermissions()
+        if !self.settings.hasCompletedOnboarding {
             self.isShowingOnboarding = true
         }
+    }
+    
+    public func refreshPermissions() {
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false]
+        self.isAccessibilityTrusted = AXIsProcessTrustedWithOptions(options)
     }
     
     private func cleanLegacyAdultSites() {
@@ -94,17 +199,33 @@ public final class FocusEngine: ObservableObject {
     
     private func ensureDefaultWebsitesPresent() {
         var updated = false
-        for defaultSite in AppSettings.defaultWebsites {
-            if !settings.blockedWebsites.contains(where: { $0.domain.lowercased() == defaultSite.domain.lowercased() }) {
-                settings.blockedWebsites.append(defaultSite)
-                updated = true
-            }
+        if settings.blockedWebsites.isEmpty {
+            settings.blockedWebsites = AppSettings.defaultWebsites
+            updated = true
         }
-        for defaultAllowed in AppSettings.defaultAllowedWebsites {
-            if !settings.allowedWebsites.contains(where: { $0.domain.lowercased() == defaultAllowed.domain.lowercased() }) {
-                settings.allowedWebsites.append(defaultAllowed)
-                updated = true
-            }
+        
+        // Limpieza de sitios predeterminados obsoletos/no deseados (noticias, compras, juegos secundarios)
+        let obsoleteDomains = Set([
+            "elmundo.es", "elpais.com", "cnn.com", "bbc.com", "news.ycombinator.com",
+            "amazon.com", "mercadolibre.com", "aliexpress.com", "ebay.com",
+            "poki.com", "friv.com", "ea.com", "battle.net", "riotgames.com",
+            "linkedin.com", "netflix.com", "disneyplus.com", "primevideo.com"
+        ])
+        
+        let initialCount = settings.blockedWebsites.count
+        settings.blockedWebsites.removeAll { site in
+            return obsoleteDomains.contains(site.domain.lowercased()) && !site.isCustom
+        }
+        for obs in obsoleteDomains {
+            settings.permanentBlockedWebsites.removeAll { $0 == obs }
+        }
+        if settings.blockedWebsites.count != initialCount {
+            updated = true
+        }
+        
+        if settings.allowedWebsites.isEmpty {
+            settings.allowedWebsites = AppSettings.defaultAllowedWebsites
+            updated = true
         }
         if settings.allowedApps.isEmpty {
             settings.allowedApps = AppSettings.defaultAllowedApps
@@ -114,6 +235,17 @@ public final class FocusEngine: ObservableObject {
             settings.masterCompanionPassword = "1234"
             settings.isMasterPasswordEnabled = true
             updated = true
+        }
+        // Migración: Asegurar que los límites por defecto no bloqueen sin configuración explícita
+        if settings.isAppLimitsEnabled {
+            settings.isAppLimitsEnabled = false
+            updated = true
+        }
+        for i in 0..<settings.appLimits.count {
+            if AppSettings.defaultAppLimits.contains(where: { $0.identifier == settings.appLimits[i].identifier }) && settings.appLimits[i].isEnabled {
+                settings.appLimits[i].isEnabled = false
+                updated = true
+            }
         }
         if updated {
             saveSettings()
@@ -125,6 +257,108 @@ public final class FocusEngine: ObservableObject {
     public func saveSettings() {
         if let encoded = try? JSONEncoder().encode(settings) {
             UserDefaults.standard.set(encoded, forKey: settingsKey)
+        }
+    }
+    
+    // MARK: - Copia de Seguridad & Transferencia (Importar / Exportar Ajustes)
+    
+    public func exportSettingsJSON() -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(settings),
+              let jsonString = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return jsonString
+    }
+    
+    public func importSettings(from jsonString: String) -> Result<Void, Error> {
+        guard let data = jsonString.data(using: .utf8) else {
+            let error = NSError(domain: "FocusPanic", code: 400, userInfo: [NSLocalizedDescriptionKey: "El archivo no contiene texto legible."])
+            return .failure(error)
+        }
+        
+        do {
+            let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+            self.settings = decoded
+            self.saveSettings()
+            
+            // Sincronizar servicios del sistema e idioma
+            LocalizationService.shared.setLanguage(decoded.appLanguage)
+            LaunchAtLoginService.shared.updateLaunchAtLogin(enabled: decoded.launchAtLogin)
+            
+            if self.sessionStatus == .active {
+                self.applySystemBlocks()
+            } else {
+                self.applyPermanentProtectionOnly()
+            }
+            self.refreshWatchdogRules()
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
+    
+    public func setLanguage(_ language: AppLanguage) {
+        self.settings.appLanguage = language
+        LocalizationService.shared.setLanguage(language)
+        self.saveSettings()
+    }
+    
+    public func exportSettingsToFile(completion: ((Bool, String) -> Void)? = nil) {
+        guard let jsonString = exportSettingsJSON() else {
+            completion?(false, "No se pudo generar el archivo de configuración.")
+            return
+        }
+        
+        let savePanel = NSSavePanel()
+        savePanel.title = "Guardar Copia de Seguridad de FocusPanic"
+        savePanel.prompt = "Exportar"
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateStr = formatter.string(from: Date())
+        savePanel.nameFieldStringValue = "FocusPanic_Ajustes_\(dateStr).json"
+        savePanel.allowedContentTypes = [.json]
+        
+        let response = savePanel.runModal()
+        if response == .OK, let url = savePanel.url {
+            do {
+                try jsonString.write(to: url, atomically: true, encoding: .utf8)
+                SoundService.shared.play("Hero")
+                completion?(true, "Copia de seguridad exportada en: \(url.lastPathComponent)")
+            } catch {
+                SoundService.shared.play("Basso")
+                completion?(false, "Error al guardar el archivo: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    public func importSettingsFromFile(completion: ((Bool, String) -> Void)? = nil) {
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Seleccionar Copia de Seguridad de FocusPanic"
+        openPanel.prompt = "Importar"
+        openPanel.allowedContentTypes = [.json]
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+        
+        let response = openPanel.runModal()
+        if response == .OK, let url = openPanel.url {
+            do {
+                let jsonString = try String(contentsOf: url, encoding: .utf8)
+                let result = importSettings(from: jsonString)
+                switch result {
+                case .success:
+                    SoundService.shared.play("Hero")
+                    completion?(true, "Ajustes importados y aplicados exitosamente desde \(url.lastPathComponent).")
+                case .failure(let error):
+                    SoundService.shared.play("Basso")
+                    completion?(false, "El archivo seleccionado no es válido: \(error.localizedDescription)")
+                }
+            } catch {
+                SoundService.shared.play("Basso")
+                completion?(false, "Error al leer el archivo: \(error.localizedDescription)")
+            }
         }
     }
     
@@ -208,16 +442,57 @@ public final class FocusEngine: ObservableObject {
         if let idx = settings.allowedWebsites.firstIndex(where: { $0.domain.lowercased() == clean }) {
             settings.allowedWebsites[idx].isEnabled.toggle()
         } else {
-            let newSite = BlockedWebsite(domain: clean, name: clean.capitalized, category: .productivity, isEnabled: true)
+            let newSite = BlockedWebsite(domain: clean, name: FocusEngine.cleanDomainToName(clean), category: .productivity, isEnabled: true)
             settings.allowedWebsites.append(newSite)
         }
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
-    public func addAllowedWebsite(domain: String, name: String) {
+    public func removeAllowedWebsite(id: UUID) {
+        settings.allowedWebsites.removeAll { $0.id == id }
+        saveSettings()
+        if currentSession != nil {
+            applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
+        }
+    }
+    
+    public static func cleanDomainToName(_ domain: String) -> String {
+        let clean = domain.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "www.", with: "")
+        
+        let pathParts = clean.components(separatedBy: "/")
+        let host = pathParts.first ?? clean
+        let hostParts = host.components(separatedBy: ".")
+        
+        var name = host
+        if hostParts.count >= 2 {
+            let core = hostParts[hostParts.count - 2].capitalized
+            if hostParts.count > 2 {
+                let sub = hostParts[0].capitalized
+                name = "\(sub) \(core)"
+            } else {
+                name = core
+            }
+        } else {
+            name = host.capitalized
+        }
+        
+        if pathParts.count > 1 && !pathParts[1].isEmpty {
+            name += " (/\(pathParts.dropFirst().joined(separator: "/")))"
+        }
+        return name
+    }
+    
+    public func addAllowedWebsite(domain: String, name: String = "") {
         var clean = domain.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "https://", with: "")
             .replacingOccurrences(of: "http://", with: "")
@@ -229,7 +504,7 @@ public final class FocusEngine: ObservableObject {
         
         guard !clean.isEmpty else { return }
         
-        let finalName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? clean : name
+        let finalName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? FocusEngine.cleanDomainToName(clean) : name
         
         if let idx = settings.allowedWebsites.firstIndex(where: { $0.domain.lowercased() == clean }) {
             settings.allowedWebsites[idx].isEnabled = true
@@ -241,6 +516,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -264,7 +541,7 @@ public final class FocusEngine: ObservableObject {
                 settings.allowedWebsites[idx].isEnabled = true
                 addedAny = true
             } else {
-                let newSite = BlockedWebsite(domain: clean, name: clean, category: .productivity, isEnabled: true)
+                let newSite = BlockedWebsite(domain: clean, name: FocusEngine.cleanDomainToName(clean), category: .productivity, isEnabled: true)
                 settings.allowedWebsites.append(newSite)
                 addedAny = true
             }
@@ -274,7 +551,23 @@ public final class FocusEngine: ObservableObject {
             saveSettings()
             if currentSession != nil {
                 applySystemBlocks()
+            } else {
+                applyPermanentProtectionOnly()
             }
+        }
+    }
+    
+    public func removeBlockedWebsite(id: UUID) {
+        if let site = settings.blockedWebsites.first(where: { $0.id == id }) {
+            let domainClean = site.domain.lowercased()
+            settings.permanentBlockedWebsites.removeAll { $0 == domainClean }
+        }
+        settings.blockedWebsites.removeAll { $0.id == id }
+        saveSettings()
+        if currentSession != nil {
+            applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -327,6 +620,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -335,6 +630,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -348,6 +645,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -360,6 +659,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -370,6 +671,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -408,6 +711,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -418,6 +723,8 @@ public final class FocusEngine: ObservableObject {
         saveSettings()
         if currentSession != nil {
             applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
         }
     }
     
@@ -437,7 +744,12 @@ public final class FocusEngine: ObservableObject {
     }
     
     public func performUninstall(companionPin: String) -> Bool {
-        guard companionPin == settings.masterCompanionPassword || companionPin == "1234" else {
+        let master = settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !master.isEmpty && companionPin == master else {
+            let partner = settings.officialPartnerEmail
+            if settings.isPartnerAlertUninstallEnabled && !partner.isEmpty {
+                EmailService.shared.sendTamperAlert(toEmail: partner, actionDetail: "Intento de desinstalar FocusPanic del sistema con PIN incorrecto.")
+            }
             return false
         }
         
@@ -477,16 +789,96 @@ public final class FocusEngine: ObservableObject {
             return
         }
         
-        let allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        var allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        let now = Date()
+        for (domain, expiry) in temporaryBypasses where expiry > now {
+            if !allowedDomains.contains(domain) {
+                allowedDomains.append(domain)
+            }
+        }
         
         var permanentDomains: [String] = []
         if settings.isAlwaysBlockAdultSites {
             permanentDomains.append(contentsOf: AdultBlockListProvider.adultDomains)
             permanentDomains.append(contentsOf: AdultBlockListProvider.adultInstanceKeywords)
         }
+        if settings.isForceSafeSearchEnabled {
+            permanentDomains.append(contentsOf: AdultBlockListProvider.alternativeSearchEngines)
+        }
         permanentDomains.append(contentsOf: settings.permanentBlockedWebsites)
         
-        // Identificar dominios raíz que tienen excepciones en Lista Blanca (ej. adsmanager.facebook.com o business.facebook.com)
+        // MARK: - 1. Si Tiempo Desactivado está en curso en este momento
+        if isDowntimeActiveNow && settings.downtimeSchedule.blockDuringDowntime {
+            do {
+                let allBlocked = settings.blockedWebsites.map { $0.domain }
+                try HostBlockerService.shared.applyBlock(domains: allBlocked, allowedDomains: allowedDomains, forceSafeSearch: settings.isForceSafeSearchEnabled)
+                BrowserWatchdogService.shared.start(
+                    blockedDomains: allBlocked,
+                    allowedDomains: allowedDomains,
+                    blockedKeywords: settings.blockedKeywords,
+                    isWhitelistMode: true,
+                    isAntiIncognitoEnabled: settings.isAntiIncognitoEnabled,
+                    isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled,
+                    isAdultShieldEnabled: settings.isAlwaysBlockAdultSites
+                )
+                
+                let activeAllowedApps = settings.allowedApps.filter { $0.isEnabled }
+                AppBlockerService.shared.startMonitoring(
+                    blockedApps: settings.blockedApps,
+                    allowedApps: activeAllowedApps,
+                    isWhitelistMode: true
+                )
+                generalErrorMessage = nil
+                return
+            } catch {
+                generalErrorMessage = "Permisos requeridos para activar el Tiempo Desactivado."
+            }
+        }
+        
+        // MARK: - 2. Incluir Límites de Apps y Sitios SOLO si el límite de tiempo diario fue superado
+        if settings.isAppLimitsEnabled {
+            let today = FocusStatsManager.shared.todayString
+            let dailyUsage = FocusStatsManager.shared.stats.dailyRecords[today]?.socialUsage ?? [:]
+            
+            for limit in settings.appLimits where limit.isEnabled {
+                let cleanSource = FocusStatsManager.shared.cleanSourceName(limit.name.isEmpty ? limit.identifier : limit.name)
+                let usedSecs = dailyUsage[cleanSource]?.totalSeconds ?? 0
+                let usedMins = usedSecs / 60
+                
+                if usedMins >= limit.limitMinutes {
+                    if !alertedPartnerLimitsToday.contains(cleanSource) {
+                        alertedPartnerLimitsToday.insert(cleanSource)
+                        let partner = settings.officialPartnerEmail
+                        if settings.isPartnerAlertSocialLimitEnabled && !partner.isEmpty {
+                            EmailService.shared.sendSocialLimitAlert(
+                                toEmail: partner,
+                                appName: limit.name.isEmpty ? cleanSource : limit.name,
+                                limitMinutes: limit.limitMinutes,
+                                totalMinutes: usedMins
+                            )
+                        }
+                    }
+                    
+                    if limit.targetType == "website" {
+                        let clean = limit.identifier.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !permanentDomains.contains(clean) {
+                            permanentDomains.append(clean)
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Excluir dominios con bypass temporal activo
+        permanentDomains = permanentDomains.filter { domain in
+            let clean = domain.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if let expiry = temporaryBypasses[clean], expiry > now {
+                return false
+            }
+            return true
+        }
+        
+        // Identificar dominios raíz que tienen excepciones en Lista Blanca o Bypass Temporal
         var rootsWithWhitelistExceptions: Set<String> = []
         for allowed in allowedDomains {
             let hostOnly = allowed.components(separatedBy: "/").first ?? allowed
@@ -501,10 +893,12 @@ public final class FocusEngine: ObservableObject {
         var hostsDomainsToBlock = permanentDomains
         hostsDomainsToBlock.removeAll { domain in
             let clean = domain.lowercased().replacingOccurrences(of: "www.", with: "")
-            return rootsWithWhitelistExceptions.contains(clean)
+            if rootsWithWhitelistExceptions.contains(clean) { return true }
+            if let expiry = temporaryBypasses[clean], expiry > now { return true }
+            return false
         }
         
-        if permanentDomains.isEmpty && !settings.isForceSafeSearchEnabled {
+        if permanentDomains.isEmpty && !settings.isForceSafeSearchEnabled && settings.permanentBlockedApps.isEmpty {
             try? HostBlockerService.shared.removeBlock()
             BrowserWatchdogService.shared.stop()
             AppBlockerService.shared.stopMonitoring()
@@ -512,27 +906,57 @@ public final class FocusEngine: ObservableObject {
         }
         
         do {
-            try HostBlockerService.shared.applyBlock(domains: hostsDomainsToBlock, forceSafeSearch: settings.isForceSafeSearchEnabled)
+            try HostBlockerService.shared.applyBlock(domains: hostsDomainsToBlock, allowedDomains: allowedDomains, forceSafeSearch: settings.isForceSafeSearchEnabled)
+            var permKeywords = settings.blockedKeywords
+            if settings.isAlwaysBlockAdultSites {
+                permKeywords.append(contentsOf: AdultBlockListProvider.adultKeywords)
+            }
             BrowserWatchdogService.shared.start(
                 blockedDomains: permanentDomains,
                 allowedDomains: allowedDomains,
-                blockedKeywords: settings.blockedKeywords,
+                blockedKeywords: permKeywords,
                 isWhitelistMode: false,
                 isAntiIncognitoEnabled: settings.isAntiIncognitoEnabled,
-                isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled
+                isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled,
+                isAdultShieldEnabled: settings.isAlwaysBlockAdultSites
             )
             
-            // Monitorear apps permanentes
+            // Monitorear apps permanentes + límites de apps agotados + navegadores del escudo
             var permApps: [BlockedApp] = []
+            if settings.isAlwaysBlockAdultSites {
+                permApps.append(contentsOf: AdultBlockListProvider.blockedBrowsers)
+            }
             for bId in settings.permanentBlockedApps {
                 if let found = settings.blockedApps.first(where: { $0.bundleIdentifier == bId }) {
                     var activeApp = found
                     activeApp.isEnabled = true
-                    permApps.append(activeApp)
+                    if !permApps.contains(where: { $0.bundleIdentifier == activeApp.bundleIdentifier }) {
+                        permApps.append(activeApp)
+                    }
                 } else {
-                    permApps.append(BlockedApp(bundleIdentifier: bId, appName: bId, isEnabled: true))
+                    if !permApps.contains(where: { $0.bundleIdentifier == bId }) {
+                        permApps.append(BlockedApp(bundleIdentifier: bId, appName: bId, isEnabled: true))
+                    }
                 }
             }
+            
+            if settings.isAppLimitsEnabled {
+                let today = FocusStatsManager.shared.todayString
+                let dailyUsage = FocusStatsManager.shared.stats.dailyRecords[today]?.socialUsage ?? [:]
+                
+                for limit in settings.appLimits where limit.isEnabled && limit.targetType == "app" {
+                    let cleanSource = FocusStatsManager.shared.cleanSourceName(limit.name.isEmpty ? limit.identifier : limit.name)
+                    let usedSecs = dailyUsage[cleanSource]?.totalSeconds ?? 0
+                    let usedMins = usedSecs / 60
+                    
+                    if usedMins >= limit.limitMinutes {
+                        if !permApps.contains(where: { $0.bundleIdentifier == limit.identifier }) {
+                            permApps.append(BlockedApp(bundleIdentifier: limit.identifier, appName: limit.name, isEnabled: true))
+                        }
+                    }
+                }
+            }
+            
             if !permApps.isEmpty {
                 AppBlockerService.shared.startMonitoring(blockedApps: permApps)
             } else {
@@ -542,6 +966,240 @@ public final class FocusEngine: ObservableObject {
         } catch {
             generalErrorMessage = "Permisos requeridos para activar el Escudo Permanente."
         }
+    }
+    
+    // MARK: - Evaluación de Tiempo Desactivado y Límites de Apps
+    
+    public var isDowntimeActiveNow: Bool {
+        guard settings.downtimeSchedule.isEnabled else { return false }
+        let now = Date()
+        let calendar = Calendar.current
+        let currentDay = calendar.component(.weekday, from: now)
+        guard settings.downtimeSchedule.activeDays.contains(currentDay) else { return false }
+        
+        let currentHour = calendar.component(.hour, from: now)
+        let currentMinute = calendar.component(.minute, from: now)
+        let currentTotalMins = currentHour * 60 + currentMinute
+        
+        let startTotalMins = settings.downtimeSchedule.startHour * 60 + settings.downtimeSchedule.startMinute
+        let endTotalMins = settings.downtimeSchedule.endHour * 60 + settings.downtimeSchedule.endMinute
+        
+        if startTotalMins <= endTotalMins {
+            return currentTotalMins >= startTotalMins && currentTotalMins < endTotalMins
+        } else {
+            return currentTotalMins >= startTotalMins || currentTotalMins < endTotalMins
+        }
+    }
+    
+    public func evaluateDowntimeAndLimits() {
+        guard currentSession == nil else { return }
+        applyPermanentProtectionOnly()
+    }
+    
+    // MARK: - Alertas de Límites y Extensión de Tiempo por Compañero
+    
+    private var warnedLimitsToday: Set<String> = []
+    private var lastWarningDateString: String = ""
+    
+    public func triggerOneMinuteLimitWarning(for source: String, limitMinutes: Int) {
+        let today = FocusStatsManager.shared.todayString
+        if lastWarningDateString != today {
+            warnedLimitsToday.removeAll()
+            lastWarningDateString = today
+        }
+        
+        let cleanKey = source.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !warnedLimitsToday.contains(cleanKey) else { return }
+        warnedLimitsToday.insert(cleanKey)
+        
+        SoundService.shared.play("Glass")
+        NotificationService.shared.sendNotification(
+            title: "⏳ Te queda 1 minuto en \(source)",
+            body: "Tu límite diario de \(limitMinutes) min está a punto de alcanzarse.",
+            sound: "Glass"
+        )
+    }
+    
+    // MARK: - Métodos de Bypass Temporal y Desbloqueo de Compañero
+    
+    public func generateAndSendPartnerOTP(site: String, minutes: Int, completion: @escaping (Result<String, Error>) -> Void) {
+        let cleanSite = site.lowercased()
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "www.", with: "")
+            .components(separatedBy: "/").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? site
+        
+        let partnerEmail = settings.officialPartnerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !partnerEmail.isEmpty else {
+            let error = NSError(domain: "FocusPanic.PartnerOTP", code: 400, userInfo: [NSLocalizedDescriptionKey: "No hay un correo de compañero configurado. Configúralo en los Ajustes de FocusPanic."])
+            completion(.failure(error))
+            return
+        }
+        
+        let code = EmailService.shared.generateEmergencyCode()
+        let now = Date()
+        let expires = now.addingTimeInterval(15 * 60) // Válido 15 minutos
+        
+        let otp = PendingPartnerOTP(code: code, site: cleanSite, minutes: minutes, createdAt: now, expiresAt: expires, isUsed: false)
+        pendingPartnerOTPs[code] = otp
+        
+        EmailService.shared.sendPartnerOTPTimeRequest(toEmail: partnerEmail, site: cleanSite, minutes: minutes, otpCode: code) { result in
+            DispatchQueue.main.async {
+                completion(result)
+            }
+        }
+    }
+    
+    public func verifyAndConsumePartnerOTP(site: String, code: String) -> (isValid: Bool, minutes: Int) {
+        let cleanCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let otp = pendingPartnerOTPs[cleanCode], !otp.isUsed else {
+            return (false, 0)
+        }
+        
+        if Date() > otp.expiresAt {
+            pendingPartnerOTPs.removeValue(forKey: cleanCode)
+            return (false, 0)
+        }
+        
+        pendingPartnerOTPs[cleanCode]?.isUsed = true
+        pendingPartnerOTPs.removeValue(forKey: cleanCode)
+        return (true, otp.minutes)
+    }
+    
+    public func grantTemporaryBypass(identifier: String, minutes: Int) -> Bool {
+        guard minutes > 0 else { return false }
+        let cleanId = identifier.lowercased()
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "www.", with: "")
+            .components(separatedBy: "/").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? identifier.lowercased()
+        
+        guard !cleanId.isEmpty else { return false }
+        
+        let expiryDate = Date().addingTimeInterval(Double(minutes) * 60)
+        
+        var targets = [cleanId, "www.\(cleanId)"]
+        if cleanId.contains("instagram") {
+            targets.append(contentsOf: ["instagram.com", "www.instagram.com", "cdninstagram.com", "static.cdninstagram.com", "threads.net", "scontent.cdninstagram.com", "graph.instagram.com", "api.instagram.com"])
+        } else if cleanId.contains("facebook") || cleanId == "fb.com" {
+            targets.append(contentsOf: ["facebook.com", "www.facebook.com", "fbcdn.net", "facebook.net", "fb.com", "messenger.com", "web.facebook.com"])
+        } else if cleanId.contains("youtube") || cleanId == "youtu.be" {
+            targets.append(contentsOf: ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "ytimg.com", "googlevideo.com"])
+        } else if cleanId.contains("tiktok") {
+            targets.append(contentsOf: ["tiktok.com", "www.tiktok.com", "m.tiktok.com", "tiktokcdn.com", "byteoversea.com", "ibytedtos.com"])
+        } else if cleanId.contains("twitter") || cleanId == "x.com" {
+            targets.append(contentsOf: ["twitter.com", "www.twitter.com", "x.com", "www.x.com", "twimg.com", "t.co"])
+        } else if cleanId.contains("reddit") {
+            targets.append(contentsOf: ["reddit.com", "www.reddit.com", "redd.it", "redditstatic.com", "redditmedia.com"])
+        } else if cleanId.contains("netflix") {
+            targets.append(contentsOf: ["netflix.com", "www.netflix.com", "nflxext.com", "nflximg.net", "nflxvideo.net"])
+        }
+        
+        for target in targets {
+            let cleanTarget = target.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            temporaryBypasses[cleanTarget] = expiryDate
+            temporaryBypassTimers[cleanTarget]?.cancel()
+            
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                self.temporaryBypasses.removeValue(forKey: cleanTarget)
+                self.temporaryBypassTimers.removeValue(forKey: cleanTarget)
+                self.refreshWatchdogRules()
+                if self.currentSession != nil {
+                    self.applySystemBlocks()
+                } else {
+                    self.applyPermanentProtectionOnly()
+                }
+                
+                if cleanTarget == cleanId {
+                    NotificationService.shared.sendNotification(
+                        title: "🔒 Tiempo Concluido",
+                        body: "Los \(minutes) minutos de acceso para \(FocusStatsManager.shared.cleanSourceName(cleanId)) han terminado. El bloqueo ha sido reactivado.",
+                        sound: "Basso"
+                    )
+                }
+            }
+            temporaryBypassTimers[cleanTarget] = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(minutes) * 60, execute: workItem)
+        }
+        
+        // Extender app limits si aplica
+        _ = self.extendLimit(identifier: cleanId, additionalMinutes: minutes)
+        
+        refreshWatchdogRules()
+        if currentSession != nil {
+            applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
+        }
+        
+        SoundService.shared.play("Hero")
+        NotificationService.shared.sendNotification(
+            title: "✨ Acceso Otorgado (+\(minutes) min)",
+            body: "Tu compañero aprobó \(minutes) minutos de acceso temporal para \(FocusStatsManager.shared.cleanSourceName(cleanId)).",
+            sound: "Hero"
+        )
+        return true
+    }
+    
+    public func extendLimit(identifier: String, additionalMinutes: Int) -> Bool {
+        guard additionalMinutes > 0 else { return false }
+        let cleanId = identifier.lowercased()
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+            .replacingOccurrences(of: "www.", with: "")
+            .components(separatedBy: "/").first ?? identifier.lowercased()
+        
+        var foundAny = false
+        
+        for i in 0..<settings.appLimits.count {
+            let limitId = settings.appLimits[i].identifier.lowercased()
+            let limitName = settings.appLimits[i].name.lowercased()
+            let targetClean = FocusStatsManager.shared.cleanSourceName(limitName).lowercased()
+            let inputClean = FocusStatsManager.shared.cleanSourceName(cleanId).lowercased()
+            
+            if limitId.contains(cleanId) || cleanId.contains(limitId) || targetClean == inputClean || limitName.contains(cleanId) {
+                settings.appLimits[i].limitMinutes += additionalMinutes
+                foundAny = true
+            }
+        }
+        
+        if !foundAny {
+            let sourceName = FocusStatsManager.shared.cleanSourceName(cleanId)
+            let currentUsedSecs = FocusStatsManager.shared.stats.dailyRecords[FocusStatsManager.shared.todayString]?.socialUsage[sourceName]?.totalSeconds ?? 0
+            let currentUsedMins = currentUsedSecs / 60
+            let newLimit = AppTimeLimit(
+                targetType: cleanId.contains(".") ? "website" : "app",
+                identifier: cleanId,
+                name: sourceName,
+                limitMinutes: currentUsedMins + additionalMinutes,
+                isEnabled: true
+            )
+            settings.appLimits.append(newLimit)
+        }
+        
+        warnedLimitsToday.remove(FocusStatsManager.shared.cleanSourceName(cleanId).lowercased())
+        
+        saveSettings()
+        applyPermanentProtectionOnly()
+        return true
+    }
+    
+    public func verifyCompanionPassword(_ entered: String) -> Bool {
+        let cleanEntered = entered.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanEntered.isEmpty else { return false }
+        
+        let master = settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !master.isEmpty && cleanEntered == master {
+            return true
+        }
+        
+        let secAnswer = settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !secAnswer.isEmpty && cleanEntered.lowercased() == secAnswer {
+            return true
+        }
+        
+        return false
     }
     
     // MARK: - Métodos de Control Anti-Incógnito y Palabras Prohibidas
@@ -556,6 +1214,41 @@ public final class FocusEngine: ObservableObject {
         settings.isKeywordBlockerEnabled = enabled
         saveSettings()
         refreshWatchdogRules()
+    }
+    
+    public func updateWhatsAppStatusBlocker(enabled: Bool) {
+        settings.isWhatsAppStatusBlockerEnabled = enabled
+        saveSettings()
+        if enabled {
+            promptAndOpenAccessibilitySettingsIfNeeded()
+        }
+        WhatsAppStatusWatcherService.shared.updateState(
+            isStatusEnabled: settings.isWhatsAppStatusBlockerEnabled,
+            isChannelsEnabled: settings.isWhatsAppChannelsBlockerEnabled
+        )
+    }
+    
+    public func updateWhatsAppChannelsBlocker(enabled: Bool) {
+        settings.isWhatsAppChannelsBlockerEnabled = enabled
+        saveSettings()
+        if enabled {
+            promptAndOpenAccessibilitySettingsIfNeeded()
+        }
+        WhatsAppStatusWatcherService.shared.updateState(
+            isStatusEnabled: settings.isWhatsAppStatusBlockerEnabled,
+            isChannelsEnabled: settings.isWhatsAppChannelsBlockerEnabled
+        )
+    }
+    
+    public func promptAndOpenAccessibilitySettingsIfNeeded() {
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false]
+        if !AXIsProcessTrustedWithOptions(options) {
+            let promptOptions: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+            _ = AXIsProcessTrustedWithOptions(promptOptions)
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
     
     public func addBlockedKeyword(_ keyword: String) {
@@ -579,18 +1272,44 @@ public final class FocusEngine: ObservableObject {
     }
     
     private func refreshWatchdogRules() {
-        let allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
-        let blocked = sessionStatus == .active
+        var allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        let now = Date()
+        for (domain, expiry) in temporaryBypasses where expiry > now {
+            if !allowedDomains.contains(domain) {
+                allowedDomains.append(domain)
+            }
+        }
+        
+        var blocked = sessionStatus == .active
             ? settings.blockedWebsites.filter { $0.isEnabled }.map { $0.domain }
             : settings.permanentBlockedWebsites
+        
+        blocked = blocked.filter { domain in
+            let clean = domain.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if let expiry = temporaryBypasses[clean], expiry > now {
+                return false
+            }
+            return true
+        }
+        
+        var keywords = settings.blockedKeywords
+        if settings.isAlwaysBlockAdultSites {
+            blocked.append(contentsOf: AdultBlockListProvider.adultDomains)
+            blocked.append(contentsOf: AdultBlockListProvider.adultInstanceKeywords)
+            keywords.append(contentsOf: AdultBlockListProvider.adultKeywords)
+        }
+        if settings.isForceSafeSearchEnabled {
+            blocked.append(contentsOf: AdultBlockListProvider.alternativeSearchEngines)
+        }
         
         BrowserWatchdogService.shared.updateRules(
             blockedDomains: blocked,
             allowedDomains: allowedDomains,
-            blockedKeywords: settings.blockedKeywords,
+            blockedKeywords: keywords,
             isWhitelistMode: (sessionStatus == .active && currentSession?.presetName == "Bloqueo Total"),
             isAntiIncognitoEnabled: settings.isAntiIncognitoEnabled,
-            isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled
+            isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled,
+            isAdultShieldEnabled: settings.isAlwaysBlockAdultSites
         )
     }
     
@@ -654,7 +1373,14 @@ public final class FocusEngine: ObservableObject {
     public func applySystemBlocks() {
         let isTotalBlock = (currentSession?.presetName == "Bloqueo Total" || settings.blockingMode == .whitelistOnly)
         
-        let allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        var allowedDomains = settings.allowedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        let now = Date()
+        for (domain, expiry) in temporaryBypasses where expiry > now {
+            if !allowedDomains.contains(domain) {
+                allowedDomains.append(domain)
+            }
+        }
+        
         let allowedBundleIds = settings.allowedApps.filter { $0.isEnabled }.map { $0.bundleIdentifier }
         
         var domainsToBlock: [String] = []
@@ -682,27 +1408,77 @@ public final class FocusEngine: ObservableObject {
         
         domainsToBlock.removeAll { domain in
             let clean = domain.lowercased().replacingOccurrences(of: "www.", with: "")
-            return rootsWithWhitelistExceptions.contains(clean)
+            if rootsWithWhitelistExceptions.contains(clean) { return true }
+            if let expiry = temporaryBypasses[clean], expiry > now { return true }
+            return false
         }
         
         do {
-            try HostBlockerService.shared.applyBlock(domains: domainsToBlock, forceSafeSearch: settings.isForceSafeSearchEnabled)
+            try HostBlockerService.shared.applyBlock(domains: domainsToBlock, allowedDomains: allowedDomains, forceSafeSearch: settings.isForceSafeSearchEnabled)
             generalErrorMessage = nil
         } catch {
             generalErrorMessage = "⚠️ Permisos necesarios: \(error.localizedDescription)"
         }
         
-        let activeBlockedApps = settings.blockedApps.filter { $0.isEnabled && !allowedBundleIds.contains($0.bundleIdentifier) }
-        AppBlockerService.shared.startMonitoring(blockedApps: activeBlockedApps)
+        var activeBlockedApps = settings.blockedApps.filter { $0.isEnabled && !allowedBundleIds.contains($0.bundleIdentifier) }
         
-        let allActiveBlocked = settings.blockedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        if settings.isBlockDevToolsEnabled {
+            let devTools = [
+                BlockedApp(bundleIdentifier: "com.apple.Terminal", appName: "Terminal", isEnabled: true),
+                BlockedApp(bundleIdentifier: "com.apple.ActivityMonitor", appName: "Monitor de Actividad", isEnabled: true),
+                BlockedApp(bundleIdentifier: "com.googlecode.iterm2", appName: "iTerm2", isEnabled: true),
+                BlockedApp(bundleIdentifier: "dev.warp.Warp-Stable", appName: "Warp", isEnabled: true),
+                BlockedApp(bundleIdentifier: "io.alacritty", appName: "Alacritty", isEnabled: true),
+                BlockedApp(bundleIdentifier: "net.kovidgoyal.kitty", appName: "kitty", isEnabled: true),
+                BlockedApp(bundleIdentifier: "com.mitchellh.ghostty", appName: "Ghostty", isEnabled: true)
+            ]
+            for tool in devTools {
+                if !activeBlockedApps.contains(where: { $0.bundleIdentifier.lowercased() == tool.bundleIdentifier.lowercased() }) {
+                    activeBlockedApps.append(tool)
+                }
+            }
+        }
+        
+        if settings.isAlwaysBlockAdultSites {
+            for browserApp in AdultBlockListProvider.blockedBrowsers {
+                if !activeBlockedApps.contains(where: { $0.bundleIdentifier.lowercased() == browserApp.bundleIdentifier.lowercased() }) {
+                    activeBlockedApps.append(browserApp)
+                }
+            }
+        }
+        
+        let activeAllowedApps = settings.allowedApps.filter { $0.isEnabled }
+        AppBlockerService.shared.startMonitoring(
+            blockedApps: activeBlockedApps,
+            allowedApps: activeAllowedApps,
+            isWhitelistMode: isTotalBlock
+        )
+        
+        var allActiveBlocked = settings.blockedWebsites.filter { $0.isEnabled }.map { $0.domain }
+        allActiveBlocked.removeAll { domain in
+            let clean = domain.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if let expiry = temporaryBypasses[clean], expiry > now { return true }
+            return false
+        }
+        
+        var sessionKeywords = settings.blockedKeywords
+        if settings.isAlwaysBlockAdultSites {
+            allActiveBlocked.append(contentsOf: AdultBlockListProvider.adultDomains)
+            allActiveBlocked.append(contentsOf: AdultBlockListProvider.adultInstanceKeywords)
+            sessionKeywords.append(contentsOf: AdultBlockListProvider.adultKeywords)
+        }
+        if settings.isForceSafeSearchEnabled {
+            allActiveBlocked.append(contentsOf: AdultBlockListProvider.alternativeSearchEngines)
+        }
+        
         BrowserWatchdogService.shared.start(
             blockedDomains: allActiveBlocked,
             allowedDomains: allowedDomains,
-            blockedKeywords: settings.blockedKeywords,
+            blockedKeywords: sessionKeywords,
             isWhitelistMode: isTotalBlock,
             isAntiIncognitoEnabled: settings.isAntiIncognitoEnabled,
-            isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled
+            isKeywordBlockerEnabled: settings.isKeywordBlockerEnabled,
+            isAdultShieldEnabled: settings.isAlwaysBlockAdultSites
         )
     }
     
@@ -829,6 +1605,17 @@ public final class FocusEngine: ObservableObject {
         let targetPhrase = settings.reflectionPhrase.trimmingCharacters(in: .whitespacesAndNewlines)
         
         if cleanInput.caseInsensitiveCompare(targetPhrase) == .orderedSame || cleanInput.count >= targetPhrase.count {
+            let remainingMins = max(1, Int(self.remainingSeconds / 60))
+            let phrase = cleanInput.isEmpty ? targetPhrase : cleanInput
+            let partner = settings.officialPartnerEmail
+            if settings.isPartnerAlertEmergencyUnlockEnabled && !partner.isEmpty {
+                EmailService.shared.sendEmergencyUnlockAlert(
+                    toEmail: partner,
+                    reflectionText: phrase,
+                    remainingMinutes: remainingMins
+                )
+            }
+            
             self.isEmergencyModalPresented = false
             self.enteredReflectionText = ""
             self.emergencyErrorMessage = nil
@@ -880,5 +1667,34 @@ public final class FocusEngine: ObservableObject {
     public var formattedDelayRemainingTime: String {
         let total = Int(unlockDelayRemainingSeconds)
         return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+    
+    // MARK: - Recuperación y Reinicio Seguro
+    
+    public func relaunchApp() {
+        saveSettings()
+        SoundService.shared.play("Hero")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            AppDelegate.shared?.authorizeAndRelaunch()
+        }
+    }
+    
+    public func restartSubsystems() {
+        saveSettings()
+        LocalInterventionServer.shared.stop()
+        LocalInterventionServer.shared.start()
+        
+        BrowserWatchdogService.shared.stop()
+        WhatsAppStatusWatcherService.shared.stop()
+        AppBlockerService.shared.stopMonitoring()
+        
+        if sessionStatus == .active {
+            applySystemBlocks()
+        } else {
+            applyPermanentProtectionOnly()
+        }
+        
+        evaluateDowntimeAndLimits()
+        SoundService.shared.play("Hero")
     }
 }

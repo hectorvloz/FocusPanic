@@ -12,6 +12,8 @@ public final class FocusStatsManager: ObservableObject {
     }()
     
     @Published public var stats: FocusStats
+    @Published public var newlyUnlockedTier: FocusTier? = nil
+    @Published public var newlyUnlockedBadge: FocusBadge? = nil
     
     private init() {
         if let data = UserDefaults.standard.data(forKey: statsKey),
@@ -22,6 +24,7 @@ public final class FocusStatsManager: ObservableObject {
         }
         
         self.checkAndRefreshStreak()
+        self.evaluateBadges()
     }
     
     public func save() {
@@ -30,7 +33,7 @@ public final class FocusStatsManager: ObservableObject {
         }
     }
     
-    private var todayString: String {
+    public var todayString: String {
         return dateFormatter.string(from: Date())
     }
     
@@ -46,6 +49,9 @@ public final class FocusStatsManager: ObservableObject {
         stats.dailyRecords[today] = record
         
         stats.totalFocusMinutesAllTime += durationMinutes
+        
+        // Gamificación: +10 XP por minuto completado
+        addXP(points: durationMinutes * 10, reason: "Sesión de enfoque de \(durationMinutes)m")
         
         updateStreakOnActivity(dateString: today)
         save()
@@ -92,26 +98,79 @@ public final class FocusStatsManager: ObservableObject {
             stats.recentInterceptions = Array(stats.recentInterceptions.prefix(100))
         }
         
+        // Gamificación: +5 XP por impulso interceptado
+        addXP(points: 5, reason: "Impulso interceptado (\(cleanSource))")
+        
         save()
     }
     
     public func cleanSourceName(_ raw: String) -> String {
         let lower = raw.lowercased()
+        
+        // 1. Búsquedas y Términos Prohibidos
+        if lower.contains("búsqueda") || lower.contains("busqueda") || lower.contains("termino") || lower.contains("término") || lower.contains("keyword") {
+            let extracted = raw
+                .replacingOccurrences(of: "Búsqueda: ", with: "")
+                .replacingOccurrences(of: "busqueda: ", with: "")
+                .replacingOccurrences(of: "Búsqueda:", with: "")
+                .replacingOccurrences(of: "Termino Prohibido: ", with: "")
+                .replacingOccurrences(of: "Termino Prohibido:", with: "")
+                .replacingOccurrences(of: "término:", with: "")
+                .components(separatedBy: " en ").first ?? raw
+            let clean = extracted.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !clean.isEmpty && clean.lowercased() != "prohibida" && clean.lowercased() != "prohibido" {
+                return "Búsqueda: \"\(clean)\""
+            } else {
+                return "Búsqueda Prohibida"
+            }
+        }
+        
+        // 2. Almacenamiento & Filtraciones (TeraBox, Mega, etc.)
+        if lower.contains("terabox") || lower.contains("1024tera") || lower.contains("4funbox") || lower.contains("mirrobox") || lower.contains("nephobox") {
+            return "TeraBox"
+        }
+        if lower.contains("mega.nz") || lower == "mega" { return "Mega" }
+        if lower.contains("gofile") { return "Gofile" }
+        if lower.contains("pixeldrain") { return "Pixeldrain" }
+        if lower.contains("bunkr") { return "Bunkr" }
+        if lower.contains("coomer") { return "Coomer" }
+        if lower.contains("kemono") { return "Kemono" }
+        if lower.contains("fapello") { return "Fapello" }
+        if lower.contains("erome") { return "Erome" }
+        
+        // 3. Sitios para Adultos Específicos
+        if lower.contains("pornhub") { return "Pornhub" }
+        if lower.contains("xvideos") { return "Xvideos" }
+        if lower.contains("xnxx") { return "XNXX" }
+        if lower.contains("xhamster") { return "xHamster" }
+        if lower.contains("onlyfans") { return "OnlyFans" }
+        if lower.contains("chaturbate") { return "Chaturbate" }
+        if lower.contains("stripchat") { return "Stripchat" }
+        if lower.contains("spankbang") { return "SpankBang" }
+        if lower.contains("redtube") { return "RedTube" }
+        if lower.contains("youporn") { return "YouPorn" }
+        if lower.contains("porn") || lower.contains("xxx") { return "Sitio Adulto (+18)" }
+        
+        // 4. Redes Sociales & Entretenimiento
+        if lower.contains("netflix") { return "Netflix" }
         if lower.contains("instagram") { return "Instagram" }
         if lower.contains("tiktok") { return "TikTok" }
-        if lower.contains("youtube") { return "YouTube" }
-        if lower.contains("twitter") || lower.contains("x.com") { return "X (Twitter)" }
-        if lower.contains("facebook") { return "Facebook" }
+        if lower.contains("youtube") || lower.contains("youtu.be") { return "YouTube" }
+        if lower.contains("twitter") || lower.contains("://x.com") || lower.contains(".x.com") || lower.contains("/x.com") || lower == "x.com" { return "X (Twitter)" }
+        if lower.contains("facebook") || lower.contains("fb.com") { return "Facebook" }
+        if lower.contains("redlib") || lower.contains("libreddit") || lower.contains("teddit") { return "Reddit (Proxy / Redlib)" }
         if lower.contains("reddit") { return "Reddit" }
-        if lower.contains("netflix") { return "Netflix" }
         if lower.contains("twitch") { return "Twitch" }
         if lower.contains("discord") { return "Discord" }
-        if lower.contains("telegram") { return "Telegram" }
+        if lower.contains("telegram") || lower.contains("t.me") { return "Telegram" }
+        if lower.contains("whatsapp") { return "WhatsApp (Estados)" }
         if lower.contains("threads.net") { return "Threads" }
-        if lower.contains("pinterest") { return "Pinterest" }
         if lower.contains("incognito") || lower.contains("incógnito") { return "Modo Incógnito" }
-        if lower.contains("búsqueda") || lower.contains("termino") || lower.contains("keyword") { return "Búsqueda Prohibida" }
-        if lower.contains("porn") || lower.contains("xxx") { return "Sitio Adulto (+18)" }
+        
+        // 5. Aplicaciones de IA / Contenedores
+        if lower.contains("claude") { return "Claude AI" }
+        if lower.contains("chatgpt") || lower.contains("openai") { return "ChatGPT" }
+        if lower.contains("gemini") { return "Gemini AI" }
         
         let cleaned = raw.replacingOccurrences(of: "www.", with: "")
             .replacingOccurrences(of: "https://", with: "")
@@ -135,19 +194,147 @@ public final class FocusStatsManager: ObservableObject {
                 // Día consecutivo consecutivo!
                 stats.currentStreakDays += 1
                 stats.lastActiveDateString = dateString
+                addXP(points: 100, reason: "Bono de Racha Diaria 🔥")
             } else {
                 // Se rompió la racha anterior, reiniciar en 1
                 stats.currentStreakDays = 1
                 stats.lastActiveDateString = dateString
+                addXP(points: 50, reason: "Nueva Racha Iniciada")
             }
         } else {
             // Primera sesión registrada
             stats.currentStreakDays = 1
             stats.lastActiveDateString = dateString
+            addXP(points: 100, reason: "¡Primera Racha Registrada!")
         }
         
         if stats.currentStreakDays > stats.bestStreakDays {
             stats.bestStreakDays = stats.currentStreakDays
+        }
+        
+        evaluateBadges()
+    }
+    
+    // MARK: - Métodos de Gamificación "Racha de Hierro"
+    
+    public var currentTier: FocusTier {
+        return FocusTier.tier(for: stats.totalXP)
+    }
+    
+    public var nextTier: FocusTier? {
+        let current = currentTier
+        return FocusTier.tiers.first(where: { $0.level == current.level + 1 })
+    }
+    
+    public var tierProgressFraction: Double {
+        let current = currentTier
+        guard let next = nextTier else { return 1.0 }
+        let currentRange = next.minXP - current.minXP
+        guard currentRange > 0 else { return 1.0 }
+        let earnedInTier = stats.totalXP - current.minXP
+        return min(1.0, max(0.0, Double(earnedInTier) / Double(currentRange)))
+    }
+    
+    public var xpNeededForNextTier: Int {
+        guard let next = nextTier else { return 0 }
+        return max(0, next.minXP - stats.totalXP)
+    }
+    
+    public func addXP(points: Int, reason: String = "") {
+        guard points > 0 else { return }
+        let oldTier = currentTier
+        stats.totalXP += points
+        
+        let newTier = currentTier
+        if newTier.level > oldTier.level {
+            stats.lastCelebratedTierLevel = newTier.level
+            newlyUnlockedTier = newTier
+            let tierTitle = newTier.title
+            let tierLevel = newTier.level
+            let streak = stats.currentStreakDays
+            DispatchQueue.main.async {
+                let partner = FocusEngine.shared.settings.officialPartnerEmail
+                if FocusEngine.shared.settings.isPartnerAlertAchievementsEnabled && !partner.isEmpty {
+                    EmailService.shared.sendAchievementAlert(
+                        toEmail: partner,
+                        tierTitle: tierTitle,
+                        tierLevel: tierLevel,
+                        streakDays: streak
+                    )
+                }
+            }
+        }
+        
+        evaluateBadges()
+        save()
+    }
+    
+    public func evaluateBadges() {
+        var unlocked = Set(stats.unlockedBadgeIds)
+        
+        // 1. Primer Paso: al menos 10 min de enfoque
+        if stats.totalFocusMinutesAllTime >= 10 || stats.dailyRecords.values.contains(where: { $0.sessionsCompletedCount >= 1 }) {
+            if !unlocked.contains("first_session") {
+                unlocked.insert("first_session")
+                notifyBadgeUnlocked(id: "first_session")
+            }
+        }
+        
+        // 2. Racha de 3 días
+        if stats.currentStreakDays >= 3 || stats.bestStreakDays >= 3 {
+            if !unlocked.contains("streak_3") {
+                unlocked.insert("streak_3")
+                notifyBadgeUnlocked(id: "streak_3")
+            }
+        }
+        
+        // 3. Racha de 7 días (Racha de Hierro)
+        if stats.currentStreakDays >= 7 || stats.bestStreakDays >= 7 {
+            if !unlocked.contains("streak_7") {
+                unlocked.insert("streak_7")
+                notifyBadgeUnlocked(id: "streak_7")
+            }
+        }
+        
+        // 4. Titán 30 días
+        if stats.currentStreakDays >= 30 || stats.bestStreakDays >= 30 {
+            if !unlocked.contains("streak_30") {
+                unlocked.insert("streak_30")
+                notifyBadgeUnlocked(id: "streak_30")
+            }
+        }
+        
+        // 5. Escudo Mental: 25 intercepciones
+        if stats.totalInterceptionsAllTime >= 25 {
+            if !unlocked.contains("interceptions_25") {
+                unlocked.insert("interceptions_25")
+                notifyBadgeUnlocked(id: "interceptions_25")
+            }
+        }
+        
+        // 6. Horas 10h (600 min)
+        if stats.totalFocusMinutesAllTime >= 600 {
+            if !unlocked.contains("hours_10") {
+                unlocked.insert("hours_10")
+                notifyBadgeUnlocked(id: "hours_10")
+            }
+        }
+        
+        // 7. Horas 50h (3000 min)
+        if stats.totalFocusMinutesAllTime >= 3000 {
+            if !unlocked.contains("hours_50") {
+                unlocked.insert("hours_50")
+                notifyBadgeUnlocked(id: "hours_50")
+            }
+        }
+        
+        stats.unlockedBadgeIds = Array(unlocked)
+    }
+    
+    private func notifyBadgeUnlocked(id: String) {
+        if let badge = FocusBadge.allBadges.first(where: { $0.id == id }) {
+            newlyUnlockedBadge = badge
+            SoundService.shared.play("Hero")
         }
     }
     
