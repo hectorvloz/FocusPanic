@@ -57,6 +57,7 @@ public struct AppSettings: Codable, Equatable {
     public var launchAtLogin: Bool
     public var appLanguage: AppLanguage
     public var showMotivationalRedirect: Bool
+    public var autoCheckForUpdates: Bool
     public var isAlwaysBlockAdultSites: Bool // Switch del Escudo Anti-Porn (+1,000 sitios)
     public var isForceSafeSearchEnabled: Bool // Forzar SafeSearch estricto en Google, Bing, DuckDuckGo
     public var isAntiIncognitoEnabled: Bool // Cerrar automáticamente ventanas privadas en Safari, Chrome, Brave, Arc, Edge
@@ -201,6 +202,7 @@ public struct AppSettings: Codable, Equatable {
         launchAtLogin: Bool = true,
         appLanguage: AppLanguage = .spanish,
         showMotivationalRedirect: Bool = true,
+        autoCheckForUpdates: Bool = true,
         isAlwaysBlockAdultSites: Bool = true,
         isForceSafeSearchEnabled: Bool = true,
         isAntiIncognitoEnabled: Bool = true,
@@ -249,6 +251,7 @@ public struct AppSettings: Codable, Equatable {
         self.launchAtLogin = launchAtLogin
         self.appLanguage = appLanguage
         self.showMotivationalRedirect = showMotivationalRedirect
+        self.autoCheckForUpdates = autoCheckForUpdates
         self.isAlwaysBlockAdultSites = isAlwaysBlockAdultSites
         self.isForceSafeSearchEnabled = isForceSafeSearchEnabled
         self.isAntiIncognitoEnabled = isAntiIncognitoEnabled
@@ -300,6 +303,7 @@ public struct AppSettings: Codable, Equatable {
         self.launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? true
         self.appLanguage = try container.decodeIfPresent(AppLanguage.self, forKey: .appLanguage) ?? .spanish
         self.showMotivationalRedirect = try container.decodeIfPresent(Bool.self, forKey: .showMotivationalRedirect) ?? true
+        self.autoCheckForUpdates = try container.decodeIfPresent(Bool.self, forKey: .autoCheckForUpdates) ?? true
         self.isAlwaysBlockAdultSites = try container.decodeIfPresent(Bool.self, forKey: .isAlwaysBlockAdultSites) ?? true
         self.isForceSafeSearchEnabled = try container.decodeIfPresent(Bool.self, forKey: .isForceSafeSearchEnabled) ?? true
         self.isAntiIncognitoEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAntiIncognitoEnabled) ?? true

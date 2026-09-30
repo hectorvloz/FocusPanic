@@ -1,6 +1,6 @@
 cask "focuspanic" do
   version "1.1.0"
-  sha256 "4c34622b2c7dbf7506774049c6e73b6b1b58a2fb7cb9d1ee928ecd630490ecda"
+  sha256 "e1164cbdeecf0bda299b0469c1e774dd0145370d7fa03eea16c12cfcf74a3cf5"
 
   url "https://github.com/hectorvloz/FocusPanic/releases/download/v#{version}/FocusPanic.dmg"
   name "FocusPanic"

@@ -4,6 +4,7 @@ public struct MenuBarPopoverView: View {
     @ObservedObject var engine = FocusEngine.shared
     @ObservedObject var statsManager = FocusStatsManager.shared
     @ObservedObject var l10n = LocalizationService.shared
+    @ObservedObject var updater = UpdateManager.shared
     @State private var hoveredPresetId: UUID? = nil
     
     public var body: some View {
@@ -202,6 +203,28 @@ public struct MenuBarPopoverView: View {
                     }
                     .buttonStyle(.plain)
                     .help(LocalizationService.shared.currentLanguage == .english ? "Restart FocusPanic" : "Reiniciar FocusPanic")
+                    
+                    if updater.isBannerVisible {
+                        Button(action: {
+                            closePopover()
+                            updater.isUpdateSheetPresented = true
+                            openAppDashboard()
+                        }) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text("Update")
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color(hex: "#2563EB"))
+                            .cornerRadius(7)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Nueva versión de FocusPanic disponible")
+                    }
                     
                     Button(action: { openAppDashboard() }) {
                         HStack(spacing: 4) {

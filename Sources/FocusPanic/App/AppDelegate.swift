@@ -35,6 +35,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openMainWindow()
         }
         
+        // Comprobar actualizaciones de software en segundo plano
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            if FocusEngine.shared.settings.autoCheckForUpdates {
+                UpdateManager.shared.checkForUpdates(isUserInitiated: false)
+            }
+        }
+        
         // Detectar si el sistema macOS se va a apagar o reiniciar para no interrumpir el apagado
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willPowerOffNotification,

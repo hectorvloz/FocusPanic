@@ -1886,6 +1886,7 @@ public struct PermanentShieldView: View {
 // MARK: - Vista de Configuración General & Diagnóstico de Permisos
 public struct GeneralSettingsView: View {
     @ObservedObject var engine = FocusEngine.shared
+    @ObservedObject var updater = UpdateManager.shared
     @State private var helperStatus = HostBlockerService.shared.isHelperInstalled
     @State private var dnsFamilyStatus = HostBlockerService.shared.isFamilyDNSActive()
     @State private var safariStatus = true
@@ -2065,6 +2066,99 @@ public struct GeneralSettingsView: View {
                     
                     Toggle(L10n.tr("general.pref.autoDND"), isOn: $engine.settings.isAutoDoNotDisturbEnabled)
                         .onChange(of: engine.settings.isAutoDoNotDisturbEnabled) { _ in engine.saveSettings() }
+                }
+                .padding(16)
+                .background(Color.secondary.opacity(0.04))
+                .cornerRadius(12)
+                
+                // ACTUALIZACIONES DE SOFTWARE (AUTO-UPDATER)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Label("Actualizaciones de Software", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.headline)
+                        Spacer()
+                        
+                        if case .checking = updater.state {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        }
+                    }
+                    
+                    HStack(spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color(hex: "#3B82F6").opacity(0.15))
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(Color(hex: "#3B82F6"))
+                        }
+                        
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("FocusPanic v\(updater.currentVersion)")
+                                .font(.subheadline)
+                                .fontWeight(.bold)
+                            
+                            switch updater.state {
+                            case .idle:
+                                Text("Comprueba si hay nuevas versiones y mejoras disponibles.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            case .checking:
+                                Text("Buscando actualizaciones en el repositorio de GitHub...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            case .upToDate:
+                                Text("✓ Tu aplicación está actualizada a la última versión.")
+                                    .font(.caption)
+                                    .foregroundColor(Color(hex: "#10B981"))
+                            case .updateAvailable(let release):
+                                Text("★ ¡Nueva versión \(release.tagName) disponible!")
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(Color(hex: "#2563EB"))
+                            case .downloading(let progress):
+                                Text("Descargando actualización: \(Int(progress * 100))%...")
+                                    .font(.caption)
+                                    .foregroundColor(Color(hex: "#3B82F6"))
+                            case .installing:
+                                Text("Instalando nueva versión...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            case .readyToRestart:
+                                Text("✓ Lista. Reiniciando FocusPanic...")
+                                    .font(.caption)
+                                    .foregroundColor(Color(hex: "#10B981"))
+                            case .error(let msg):
+                                Text("Error: \(msg)")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        if case .updateAvailable = updater.state {
+                            Button("Actualizar Ahora") {
+                                updater.isUpdateSheetPresented = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(hex: "#2563EB"))
+                            .controlSize(.small)
+                        } else {
+                            Button("Buscar Ahora") {
+                                updater.checkForUpdates(isUserInitiated: true)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.secondary.opacity(0.04))
+                    .cornerRadius(10)
+                    
+                    Toggle("Buscar actualizaciones automáticamente al iniciar la app", isOn: $engine.settings.autoCheckForUpdates)
+                        .onChange(of: engine.settings.autoCheckForUpdates) { _ in engine.saveSettings() }
                 }
                 .padding(16)
                 .background(Color.secondary.opacity(0.04))

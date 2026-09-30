@@ -4,6 +4,7 @@ public struct MainDashboardView: View {
     @ObservedObject var engine = FocusEngine.shared
     @ObservedObject var statsManager = FocusStatsManager.shared
     @ObservedObject var l10n = LocalizationService.shared
+    @ObservedObject var updater = UpdateManager.shared
     @State private var selectedPreset: FocusPreset? = FocusPreset.defaultPresets[1] // Pomodoro por defecto
     @State private var customDurationMinutes: Int = 25
     @State private var isShowingSettings = false
@@ -23,6 +24,38 @@ public struct MainDashboardView: View {
             
             VStack(spacing: 0) {
                 headerBar
+                
+                if updater.isBannerVisible, let release = updater.latestRelease {
+                    HStack(spacing: 12) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(Color(hex: "#3B82F6"))
+                        
+                        Text("¡Nueva versión de FocusPanic \(release.tagName) disponible!")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        
+                        Spacer()
+                        
+                        Button("Ver y Actualizar") {
+                            updater.isUpdateSheetPresented = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#2563EB"))
+                        .controlSize(.small)
+                        
+                        Button(action: { updater.dismissUpdate() }) {
+                            Image(systemName: "xmark")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(hex: "#3B82F6").opacity(0.12))
+                    .overlay(Rectangle().frame(height: 1).foregroundColor(Color(hex: "#3B82F6").opacity(0.2)), alignment: .bottom)
+                }
                 
                 Divider()
                 
@@ -91,6 +124,9 @@ public struct MainDashboardView: View {
         .sheet(isPresented: $engine.isShowingOnboarding) {
             OnboardingWizardView()
                 .interactiveDismissDisabled(true)
+        }
+        .sheet(isPresented: $updater.isUpdateSheetPresented) {
+            UpdateModalView()
         }
     }
     

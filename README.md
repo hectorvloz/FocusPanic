@@ -114,6 +114,11 @@ Para cancelar una sesión antes de que finalice, FocusPanic requiere superar un 
 * **Ventana Principal:** Estética moderna, glassmorphism con efectos translúcidos de macOS, dark mode completo y retroalimentación háptica/sonora.
 * **Inicio al Encender (Launch at Login):** Listo para proteger tu atención desde el primer segundo que inicias sesión.
 
+### 🔄 11. Actualizador Automático Integrado (Auto-Updater)
+* **Detección Automática de Releases:** Conexión directa y nativa con la API de GitHub Releases para comprobar si hay nuevas versiones al abrir la app o bajo demanda.
+* **Instalación en 1 Clic:** Descarga transparente del instalador `.dmg`, reemplazo seguro en `/Applications` y reinicio automático de la app.
+* **Historial y Novedades:** Muestra las notas de la versión directamente dentro de la aplicación para que siempre sepas qué ha mejorado.
+
 ---
 
 ## 🛠️ Compilación y Desarrollo Local

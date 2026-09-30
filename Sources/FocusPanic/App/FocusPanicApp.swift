@@ -14,10 +14,16 @@ struct FocusPanicApp: App {
                     NSApp.orderFrontStandardAboutPanel(
                         options: [
                             NSApplication.AboutPanelOptionKey.applicationName: "FocusPanic",
-                            NSApplication.AboutPanelOptionKey.version: "1.0",
+                            NSApplication.AboutPanelOptionKey.version: UpdateManager.shared.currentVersion,
                             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Diseñado para enfoque y TDAH"
                         ]
                     )
+                }
+                
+                Divider()
+                
+                Button("Buscar Actualizaciones...") {
+                    UpdateManager.shared.checkForUpdates(isUserInitiated: true)
                 }
             }
         }
