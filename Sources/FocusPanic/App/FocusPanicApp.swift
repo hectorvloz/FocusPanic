@@ -9,6 +9,9 @@ struct FocusPanicApp: App {
             EmptyView()
         }
         .commands {
+            // La escena `Settings` está vacía (los ajustes viven en la ventana
+            // principal): sin esto, «Ajustes…» / ⌘, abría una ventana en blanco.
+            CommandGroup(replacing: .appSettings) {}
             CommandGroup(replacing: .appInfo) {
                 Button("Acerca de FocusPanic") {
                     NSApp.orderFrontStandardAboutPanel(

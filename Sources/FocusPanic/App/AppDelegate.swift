@@ -35,6 +35,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openMainWindow()
         }
         
+        // La escena vacía de Ajustes de SwiftUI puede abrirse sola al relanzar
+        // la app (restauración de ventanas): se cierra en cuanto aparece.
+        closeEmptySettingsWindows()
+        settingsWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.closeEmptySettingsWindows()
+        }
+        
         // Comprobar actualizaciones de software en segundo plano
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
             if FocusEngine.shared.settings.autoCheckForUpdates {
@@ -116,6 +127,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // La app debe seguir viva en segundo plano y en la barra de menús
         return false
+    }
+    
+    private var settingsWindowObserver: NSObjectProtocol?
+    
+    private func closeEmptySettingsWindows() {
+        for window in NSApp.windows where window.identifier?.rawValue.contains("Settings_window") == true {
+            window.close()
+        }
     }
     
     private var isAuthorizedToTerminate = false
