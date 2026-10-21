@@ -70,8 +70,14 @@ public final class FocusEngine: ObservableObject {
     
     // Control de Códigos OTP y Bypass Temporal
     private var pendingPartnerOTPs: [String: PendingPartnerOTP] = [:]
-    @Published public var temporaryBypasses: [String: Date] = [:]
+    /// Accesos temporales concedidos con el código del compañero. Se guardan
+    /// en disco para que un reinicio de la app (actualización, cierre, reinicio
+    /// del Mac) no borre un acceso ya autorizado y vuelva a bloquear el sitio.
+    @Published public var temporaryBypasses: [String: Date] = [:] {
+        didSet { saveTemporaryBypasses() }
+    }
     private var temporaryBypassTimers: [String: DispatchWorkItem] = [:]
+    private let temporaryBypassesKey = "FocusPanic_TemporaryBypasses_v1"
     
     private let settingsKey = "FocusPanic_AppSettings_v2"
     private let sessionKey = "FocusPanic_ActiveSession_v2"
@@ -99,6 +105,7 @@ public final class FocusEngine: ObservableObject {
             self.isShowingOnboarding = true
         }
         
+        restoreTemporaryBypasses()
         restoreActiveSessionIfNeeded()
         
         // Iniciar servidor local de página de intervención motivacional
@@ -1098,29 +1105,13 @@ public final class FocusEngine: ObservableObject {
         for target in targets {
             let cleanTarget = target.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             temporaryBypasses[cleanTarget] = expiryDate
-            temporaryBypassTimers[cleanTarget]?.cancel()
-            
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
-                self.temporaryBypasses.removeValue(forKey: cleanTarget)
-                self.temporaryBypassTimers.removeValue(forKey: cleanTarget)
-                self.refreshWatchdogRules()
-                if self.currentSession != nil {
-                    self.applySystemBlocks()
-                } else {
-                    self.applyPermanentProtectionOnly()
-                }
-                
-                if cleanTarget == cleanId {
-                    NotificationService.shared.sendNotification(
-                        title: "🔒 Tiempo Concluido",
-                        body: "Los \(minutes) minutos de acceso para \(FocusStatsManager.shared.cleanSourceName(cleanId)) han terminado. El bloqueo ha sido reactivado.",
-                        sound: "Basso"
-                    )
-                }
-            }
-            temporaryBypassTimers[cleanTarget] = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(minutes) * 60, execute: workItem)
+            scheduleBypassExpiry(
+                target: cleanTarget,
+                at: expiryDate,
+                endMessage: cleanTarget == cleanId
+                    ? "Los \(minutes) minutos de acceso para \(FocusStatsManager.shared.cleanSourceName(cleanId)) han terminado. El bloqueo ha sido reactivado."
+                    : nil
+            )
         }
         
         // Extender app limits si aplica
@@ -1142,6 +1133,61 @@ public final class FocusEngine: ObservableObject {
         return true
     }
     
+    /// Programa el fin de un acceso temporal: lo quita y reactiva el bloqueo.
+    private func scheduleBypassExpiry(target: String, at expiry: Date, endMessage: String?) {
+        temporaryBypassTimers[target]?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.temporaryBypasses.removeValue(forKey: target)
+            self.temporaryBypassTimers.removeValue(forKey: target)
+            self.refreshWatchdogRules()
+            if self.currentSession != nil {
+                self.applySystemBlocks()
+            } else {
+                self.applyPermanentProtectionOnly()
+            }
+            
+            if let endMessage {
+                NotificationService.shared.sendNotification(
+                    title: "🔒 Tiempo Concluido",
+                    body: endMessage,
+                    sound: "Basso"
+                )
+            }
+        }
+        temporaryBypassTimers[target] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, expiry.timeIntervalSinceNow), execute: workItem)
+    }
+
+    private func saveTemporaryBypasses() {
+        let now = Date()
+        let active = temporaryBypasses.filter { $0.value > now }
+        if let data = try? JSONEncoder().encode(active) {
+            UserDefaults.standard.set(data, forKey: temporaryBypassesKey)
+        }
+    }
+
+    /// Recupera los accesos temporales que seguían vigentes al cerrar la app
+    /// y vuelve a programar su fin. Se llama antes de aplicar los bloqueos.
+    private func restoreTemporaryBypasses() {
+        guard let data = UserDefaults.standard.data(forKey: temporaryBypassesKey),
+              let saved = try? JSONDecoder().decode([String: Date].self, from: data) else { return }
+        let now = Date()
+        let active = saved.filter { $0.value > now }
+        temporaryBypasses = active
+        // Los dominios de un mismo acceso comparten la hora de fin: un solo
+        // aviso por acceso.
+        var notifiedExpiries = Set<Date>()
+        for (target, expiry) in active.sorted(by: { $0.key < $1.key }) {
+            let shouldNotify = notifiedExpiries.insert(expiry).inserted
+            scheduleBypassExpiry(
+                target: target,
+                at: expiry,
+                endMessage: shouldNotify ? "El acceso temporal autorizado por tu compañero ha terminado. El bloqueo ha sido reactivado." : nil
+            )
+        }
+    }
+
     public func extendLimit(identifier: String, additionalMinutes: Int) -> Bool {
         guard additionalMinutes > 0 else { return false }
         let cleanId = identifier.lowercased()
