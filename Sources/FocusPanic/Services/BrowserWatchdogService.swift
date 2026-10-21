@@ -19,7 +19,9 @@ public final class BrowserWatchdogService {
     private var lastDuckDuckGoAlertTime: Date = Date.distantPast
     
     // Cola de control y candado de exclusión mutua
-    private let watchdogQueue = DispatchQueue(label: "com.hector.FocusPanic.browserWatchdog", qos: .userInitiated)
+    // `.utility`: trabajo de fondo continuo; macOS puede usar núcleos de
+    // eficiencia en vez de los de rendimiento (impacto energético).
+    private let watchdogQueue = DispatchQueue(label: "com.hector.FocusPanic.browserWatchdog", qos: .utility)
     private var isChecking = false
     
     // Alertas al Compañero de Responsabilidad
@@ -46,6 +48,7 @@ public final class BrowserWatchdogService {
         self.isAntiIncognitoEnabled = isAntiIncognitoEnabled
         self.isKeywordBlockerEnabled = isKeywordBlockerEnabled
         self.isAdultShieldEnabled = isAdultShieldEnabled
+        watchdogQueue.async { self.cachedRules = [:]; self.cachedNativeMatcher = nil }
         
         stop()
         isRunning = true
@@ -58,6 +61,9 @@ public final class BrowserWatchdogService {
             self.timer = Timer.scheduledTimer(withTimeInterval: 0.85, repeats: true) { [weak self] _ in
                 self?.checkAndInterceptTabs()
             }
+            // Margen para que macOS agrupe los despertares con otros eventos
+            // (menos impacto energético) sin perder la reacción < 1 s.
+            self.timer?.tolerance = 0.2
         }
     }
     
@@ -77,6 +83,7 @@ public final class BrowserWatchdogService {
         self.isAntiIncognitoEnabled = isAntiIncognitoEnabled
         self.isKeywordBlockerEnabled = isKeywordBlockerEnabled
         self.isAdultShieldEnabled = isAdultShieldEnabled
+        watchdogQueue.async { self.cachedRules = [:]; self.cachedNativeMatcher = nil }
     }
     
     public func stop() {
@@ -105,11 +112,10 @@ public final class BrowserWatchdogService {
                 self.enforceDuckDuckGoBrowserBlock(runningApps: runningApps)
             }
             
-            // 1. Escudo Anti-Modo Incógnito / Ventanas Privadas
-            if self.isAntiIncognitoEnabled {
-                self.enforceAntiIncognito(runningBundleIds: runningBundleIds)
-            }
-            
+            // 1. Escudo Anti-Modo Incógnito / Ventanas Privadas: se detecta con
+            // la misma lectura de pestañas del paso 3 (un AppleScript por
+            // navegador y pasada en vez de tres).
+
             // 2. Verificación de Integridad de DNS Cloudflare Families y Archivo /etc/hosts (Auto-reparación y Alerta)
             self.checkDnsIntegrity()
             self.checkHostsFileIntegrity()
@@ -135,85 +141,69 @@ public final class BrowserWatchdogService {
                 ("com.kagi.kagimacOS", "Orion", true)
             ]
             
-            for config in browserConfigs {
-                if runningBundleIds.contains(config.bundleId) {
-                    if config.isSafariLike {
-                        if self.isWhitelistMode {
-                            self.enforceWhitelistInSafari(appName: config.appName)
-                        } else {
-                            self.enforceRulesInSafari(appName: config.appName)
-                        }
-                    } else {
-                        if self.isWhitelistMode {
-                            self.enforceWhitelistInChromium(appName: config.appName)
-                        } else {
-                            self.enforceRulesInChromium(appName: config.appName)
-                        }
-                    }
+            var closedIncognito = false
+            var activeTabURLs: [String: String] = [:]
+            for config in browserConfigs where runningBundleIds.contains(config.bundleId) {
+                var snapshot = self.readTabs(appName: config.appName, isSafariLike: config.isSafariLike)
+                if self.isAntiIncognitoEnabled && Self.incognitoBundleIds.contains(config.bundleId)
+                    && !snapshot.incognitoWindows.isEmpty
+                    && self.closeIncognitoWindows(appName: config.appName, isSafariLike: config.isSafariLike) {
+                    closedIncognito = true
+                    // Cerrar ventanas cambia los índices: se vuelve a leer.
+                    snapshot = self.readTabs(appName: config.appName, isSafariLike: config.isSafariLike)
                 }
+                activeTabURLs[config.bundleId] = self.enforceTabs(
+                    appName: config.appName, isSafariLike: config.isSafariLike, snapshot: snapshot
+                )
             }
-            
+            if closedIncognito {
+                self.notifyIncognitoBlocked()
+            }
+
             // 3. Vigilante Nativo de WebViews y Navegadores Integrados (Claude, Electron, PWAs)
             self.inspectNativeWebAreas(runningApps: runningApps)
-            
+
             // 4. Rastreo Pasivo 24/7 de Tiempo y Visitas en Redes Sociales
-            self.trackActiveSocialUsage(runningBundleIds: runningBundleIds)
+            self.trackActiveSocialUsage(runningBundleIds: runningBundleIds, activeTabURLs: activeTabURLs)
         }
     }
     
     // MARK: - 1. Escudo Anti-Incógnito Multi-Navegador
     
-    private func enforceAntiIncognito(runningBundleIds: Set<String>) {
-        var closedAny = false
-        
-        // Safari Private Browsing
-        if runningBundleIds.contains("com.apple.Safari") || runningBundleIds.contains("com.apple.SafariTechnologyPreview") {
-            let safariName = runningBundleIds.contains("com.apple.SafariTechnologyPreview") ? "Safari Technology Preview" : "Safari"
-            let safariIncogScript = """
-            tell application "\(safariName)"
-                try
-                    set closedCount to 0
-                    repeat with w in windows
-                        try
-                            if («class pmnd» of w) is true then
-                                close w
-                                set closedCount to closedCount + 1
-                            end if
-                        end try
-                    end repeat
-                    return closedCount
-                end try
-            end tell
-            return 0
-            """
-            if let script = NSAppleScript(source: safariIncogScript) {
-                var error: NSDictionary?
-                let res = script.executeAndReturnError(&error)
-                if (res.int32Value) > 0 { closedAny = true }
-            }
-        }
-        
-        // Chromium Browsers Incognito (SOLO si la aplicación está actualmente en ejecución)
-        let chromiumConfigs: [(bundleId: String, appName: String)] = [
-            ("com.google.Chrome", "Google Chrome"),
-            ("com.google.Chrome.canary", "Google Chrome Canary"),
-            ("com.brave.Browser", "Brave Browser"),
-            ("com.brave.Browser.beta", "Brave Browser Beta"),
-            ("com.microsoft.edgemac", "Microsoft Edge"),
-            ("com.microsoft.edgemac.Dev", "Microsoft Edge Dev"),
-            ("company.thebrowser.Arc", "Arc"),
-            ("com.operasoftware.Opera", "Opera"),
-            ("com.operasoftware.OperaGX", "Opera GX"),
-            ("com.vivaldi.Vivaldi", "Vivaldi"),
-            ("org.chromium.Chromium", "Chromium")
-        ]
-        for config in chromiumConfigs where runningBundleIds.contains(config.bundleId) {
-            if closeChromiumIncognito(appName: config.appName) { closedAny = true }
-        }
-        
-        if closedAny {
-            notifyIncognitoBlocked()
-        }
+    /// Navegadores en los que se cierran las ventanas privadas (los mismos que
+    /// antes revisaba `enforceAntiIncognito`, más Safari Technology Preview
+    /// aunque Safari también esté abierto).
+    static let incognitoBundleIds: Set<String> = [
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview",
+        "com.google.Chrome", "com.google.Chrome.canary",
+        "com.brave.Browser", "com.brave.Browser.beta",
+        "com.microsoft.edgemac", "com.microsoft.edgemac.Dev",
+        "company.thebrowser.Arc", "com.operasoftware.Opera", "com.operasoftware.OperaGX",
+        "com.vivaldi.Vivaldi", "org.chromium.Chromium",
+    ]
+
+    /// Cierra las ventanas privadas. Solo se llama cuando la lectura de
+    /// pestañas ya vio alguna, así que normalmente no se ejecuta.
+    private func closeIncognitoWindows(appName: String, isSafariLike: Bool) -> Bool {
+        guard isSafariLike else { return closeChromiumIncognito(appName: appName) }
+        let safariIncogScript = """
+        tell application "\(appName)"
+            try
+                set closedCount to 0
+                repeat with w in windows
+                    try
+                        if («class pmnd» of w) is true then
+                            close w
+                            set closedCount to closedCount + 1
+                        end if
+                    end try
+                end repeat
+                return closedCount
+            end try
+        end tell
+        return 0
+        """
+        return (runScript(safariIncogScript)?.int32Value ?? 0) > 0
     }
     
     private func closeChromiumIncognito(appName: String) -> Bool {
@@ -232,12 +222,7 @@ public final class BrowserWatchdogService {
         end tell
         return 0
         """
-        if let script = NSAppleScript(source: scriptSource) {
-            var error: NSDictionary?
-            let res = script.executeAndReturnError(&error)
-            return (res.int32Value) > 0
-        }
-        return false
+        return (runScript(scriptSource)?.int32Value ?? 0) > 0
     }
     
     private func notifyIncognitoBlocked() {
@@ -336,450 +321,216 @@ public final class BrowserWatchdogService {
         return allAllowed
     }
     
-    // MARK: - 2. Reglas en Navegadores Safari / WebKit
-    
-    private func enforceRulesInSafari(appName: String = "Safari") {
-        let allAllowed = buildAllowedSet()
-        let allowedListFormatted = allAllowed.filter { !$0.isEmpty }.map { "\"\($0)\"" }.joined(separator: ", ")
-        
-        var exactDomainsToBlock: Set<String> = []
-        for domain in self.blockedDomains {
-            let clean = domain.replacingOccurrences(of: "www.", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !clean.isEmpty && !clean.hasPrefix("#") else { continue }
-            if !allAllowed.contains(clean) {
-                exactDomainsToBlock.insert(sanitizeForAppleScript(clean))
-            }
-        }
-        let domainListFormatted = exactDomainsToBlock.map { "\"\($0)\"" }.joined(separator: ", ")
-        
-        let isAnyKeywordsActive = self.isKeywordBlockerEnabled || self.isAdultShieldEnabled
-        let keywordsFormatted = isAnyKeywordsActive
-            ? self.blockedKeywords.filter { !$0.isEmpty }.map { "\"\($0)\"" }.joined(separator: ", ")
-            : ""
-        let isTeraBoxStrict = self.isAdultShieldEnabled || self.blockedKeywords.contains("terabox") || self.blockedDomains.contains(where: { $0.contains("terabox") })
-        
-        let safariScript = """
-        on checkDomainMatch(targetURL, domainItem)
-            if targetURL contains "accounts.youtube.com" or targetURL contains "accounts.google.com" then
-                return false
-            end if
-            if domainItem is "terabox" or domainItem contains "terabox" or domainItem is "1024tera" or domainItem is "4funbox" or domainItem is "mirrobox" or domainItem is "nephobox" or domainItem is "freeterabox" or domainItem is "tibibox" or domainItem is "redlib" or domainItem is "libreddit" or domainItem is "teddit" or domainItem is "nitter" or domainItem is "proxitok" or domainItem is "invidious" or domainItem is "piped" or domainItem does not contain "." then
-                if targetURL contains ("://" & domainItem & ".") or targetURL contains ("." & domainItem & ".") or targetURL contains ("/" & domainItem & ".") or targetURL contains ("://" & domainItem & "/") or targetURL contains ("." & domainItem & "/") or targetURL contains domainItem then
-                    return true
-                end if
-            end if
-            if targetURL contains ("://" & domainItem & "/") or targetURL contains ("://" & domainItem & "?") or targetURL contains ("://" & domainItem & "#") or targetURL ends with ("://" & domainItem) or targetURL contains ("." & domainItem & "/") or targetURL contains ("." & domainItem & "?") or targetURL contains ("." & domainItem & "#") or targetURL ends with ("." & domainItem) or targetURL contains ("//" & domainItem & "/") or targetURL is equal to domainItem or targetURL contains ("://" & domainItem & ".") or targetURL contains ("." & domainItem & ".") then
-                return true
-            end if
-            return false
-        end checkDomainMatch
+    // MARK: - 2. Reglas de pestañas (Safari, WebKit y Chromium)
+    //
+    // Antes, cada pasada compilaba y ejecutaba un AppleScript enorme por
+    // navegador que hacía TODAS las comparaciones (lentas en AppleScript) y,
+    // con el escudo de adultos, leía el texto completo de cada pestaña. Una
+    // pasada sobre Safari tardaba más de 3 s y, con el temporizador a 0,85 s,
+    // FocusPanic quedaba a ~95 % de CPU sin descanso.
+    //
+    // Ahora: un script precompilado solo LEE URL y título de las pestañas, las
+    // reglas se evalúan en Swift (`BrowserTabRules`, misma semántica) y solo se
+    // vuelve a AppleScript para redirigir una pestaña bloqueada. El texto de la
+    // página se lee únicamente de la pestaña activa y de las que acaban de
+    // cambiar de URL, como mucho cada 3 s por pestaña.
 
-        on checkTeraBoxMatch(targetURL, targetTitle)
-            set combined to (targetURL as text) & " " & (targetTitle as text)
-            if combined contains "terabox" or combined contains "teraboz" or combined contains "teraboc" or combined contains "teraz" or combined contains "terboz" or combined contains "terbox" or combined contains "teravox" or combined contains "terrabox" or combined contains "terraboz" or combined contains "terraboc" or combined contains "1024tera" or combined contains "freeterabox" or combined contains "terashare" or combined contains "terafileshare" or combined contains "teradownload" or combined contains "teraboxdl" or combined contains "teradl" or combined contains "tibibox" or combined contains "4funbox" or combined contains "mirrobox" or combined contains "nephobox" or combined contains "teraboxapp" or combined contains "teraboxlink" or combined contains "momerybox" or combined contains "boxtera" or combined contains "flowvideoplayer" or combined contains "tera box" or combined contains "tera boz" or combined contains "tera boc" or combined contains "tera z" then
-                return true
-            end if
-            return false
-        end checkTeraBoxMatch
+    struct BrowserTab {
+        let window: Int
+        let index: Int
+        let url: String
+        let title: String
+    }
 
-        on checkKeywordMatch(targetURL, targetTitle, kw)
-            set combined to (targetTitle as text) & " " & (targetURL as text)
-            set prevDelims to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to {" ", "+", "%20", "-", "_", "/", "?", "=", "&", ".", ",", ":", ";", "(", ")", "[", "]", "'", "\\"", "!", "@", "#", "$", "%", "^", "*", "~", "`", "<", ">", "|", "\\\\"}
-            set textParts to text items of combined
-            set AppleScript's text item delimiters to " "
-            set normalized to " " & (textParts as text) & " "
-            set AppleScript's text item delimiters to prevDelims
-            if normalized contains (" " & kw & " ") then
-                return true
-            end if
-            return false
-        end checkKeywordMatch
+    /// Lo que devuelve una lectura de pestañas de un navegador.
+    struct TabSnapshot {
+        var tabs: [BrowserTab] = []
+        /// Pestaña activa de la ventana 1 (la del frente); 0 si no se sabe.
+        var activeIndex = 0
+        /// Ventanas privadas / de incógnito.
+        var incognitoWindows: [Int] = []
 
-        on encodeForURL(txt)
-            set prevDelims to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to " "
-            set txtList to text items of txt
-            set AppleScript's text item delimiters to "%20"
-            set res to txtList as text
-            set AppleScript's text item delimiters to prevDelims
-            return res
-        end encodeForURL
-
-        set allowedList to {\(allowedListFormatted)}
-        set blockedList to {\(domainListFormatted)}
-        set keywordsList to {\(keywordsFormatted)}
-        set blockedFound to ""
-        
-        tell application "\(appName)"
-            try
-                repeat with w in windows
-                    repeat with t in (tabs of w as list)
-                        set currentURL to URL of t
-                        set currentTitle to name of t
-                        if currentURL is not missing value and currentURL is not "" and currentURL does not start with "about:" and currentURL does not start with "favorites://" and currentURL does not start with "topsites://" and currentURL does not contain "127.0.0.1:8484" and currentURL does not contain "localhost:8484" and currentURL does not start with "http://127.0.0.1" and currentURL does not start with "http://localhost" then
-                            
-                            -- 0. VERIFICACIÓN ULTRA-ESTRICTA DE TERABOX (URL, Título y Texto de la Página / Buscador)
-                            if \(isTeraBoxStrict ? "true" : "false") then
-                                if my checkTeraBoxMatch(currentURL, currentTitle) then
-                                    set blockedFound to "TeraBox Detectado"
-                                    set URL of t to ("http://127.0.0.1:8484/?site=" & (my encodeForURL(blockedFound)))
-                                else
-                                    set pageText to ""
-                                    try
-                                        set pageText to text of t
-                                    end try
-                                    if pageText is not "" and (pageText contains "terabox" or pageText contains "teraboz" or pageText contains "teraboc" or pageText contains "1024tera" or pageText contains "freeterabox" or pageText contains "terashare" or pageText contains "teraboxdl" or pageText contains "terabox.com") then
-                                        set blockedFound to "TeraBox en Resultados"
-                                        set URL of t to ("http://127.0.0.1:8484/?site=" & (my encodeForURL(blockedFound)))
-                                    end if
-                                end if
-                            end if
-                            
-                            -- 1. VERIFICACIÓN DE PALABRAS PROHIBIDAS (Tokenizado de palabras completas)
-                            if blockedFound is "" and (count of keywordsList) > 0 then
-                                repeat with kw in keywordsList
-                                    if my checkKeywordMatch(currentURL, currentTitle, kw) then
-                                        set blockedFound to ("Búsqueda: " & kw)
-                                        set URL of t to ("http://127.0.0.1:8484/?site=" & (my encodeForURL(blockedFound)))
-                                        exit repeat
-                                    end if
-                                end repeat
-                            end if
-                            
-                            -- 2. VERIFICACIÓN DE DOMINIOS BLOQUEADOS Y LISTA BLANCA
-                            if blockedFound is "" then
-                                set isAllowed to false
-                                repeat with allowed in allowedList
-                                    if my checkDomainMatch(currentURL, allowed) then
-                                        set isAllowed to true
-                                        exit repeat
-                                    end if
-                                end repeat
-                                
-                                if isAllowed is false then
-                                    repeat with blocked in blockedList
-                                        if my checkDomainMatch(currentURL, blocked) then
-                                            set blockedFound to blocked
-                                            set URL of t to ("http://127.0.0.1:8484/?site=" & (my encodeForURL(blocked)))
-                                            exit repeat
-                                        end if
-                                    end repeat
-                                end if
-                            end if
-                        end if
-                    end repeat
-                end repeat
-            end try
-        end tell
-        return blockedFound
-        """
-        
-        var error: NSDictionary?
-        if let script = NSAppleScript(source: safariScript) {
-            let result = script.executeAndReturnError(&error)
-            let blockedDomain = result.stringValue ?? ""
-            if !blockedDomain.isEmpty {
-                notifyInterception(domain: blockedDomain, sourceApp: "Safari", isWhitelist: false)
-            }
+        /// URL de la pestaña activa de la ventana del frente, si se conoce.
+        var activeTabURL: String? {
+            guard activeIndex > 0 else { return nil }
+            return tabs.first { $0.window == 1 && $0.index == activeIndex }?.url
         }
     }
-    
-    // MARK: - 3. Reglas en Navegadores Chromium (Chrome, Brave, Edge, Arc, Opera, Vivaldi)
-    
-    private func enforceRulesInChromium(appName: String) {
-        let allAllowed = buildAllowedSet()
-        let allowedListFormatted = allAllowed.filter { !$0.isEmpty }.map { "\"\($0)\"" }.joined(separator: ", ")
-        
-        var exactDomainsToBlock: Set<String> = []
-        for domain in self.blockedDomains {
-            let clean = domain.replacingOccurrences(of: "www.", with: "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !clean.isEmpty && !clean.hasPrefix("#") else { continue }
-            if !allAllowed.contains(clean) {
-                exactDomainsToBlock.insert(sanitizeForAppleScript(clean))
-            }
-        }
-        let domainListFormatted = exactDomainsToBlock.map { "\"\($0)\"" }.joined(separator: ", ")
-        
-        let isAnyKeywordsActive = self.isKeywordBlockerEnabled || self.isAdultShieldEnabled
-        let keywordsFormatted = isAnyKeywordsActive
-            ? self.blockedKeywords.filter { !$0.isEmpty }.map { "\"\($0)\"" }.joined(separator: ", ")
-            : ""
-        let isTeraBoxStrict = self.isAdultShieldEnabled || self.blockedKeywords.contains("terabox") || self.blockedDomains.contains(where: { $0.contains("terabox") })
-        
-        let chromiumScript = """
-        on checkDomainMatch(targetURL, domainItem)
-            if targetURL contains "accounts.youtube.com" or targetURL contains "accounts.google.com" then
-                return false
-            end if
-            if domainItem is "terabox" or domainItem contains "terabox" or domainItem is "1024tera" or domainItem is "4funbox" or domainItem is "mirrobox" or domainItem is "nephobox" or domainItem is "freeterabox" or domainItem is "tibibox" or domainItem is "redlib" or domainItem is "libreddit" or domainItem is "teddit" or domainItem is "nitter" or domainItem is "proxitok" or domainItem is "invidious" or domainItem is "piped" or domainItem does not contain "." then
-                if targetURL contains ("://" & domainItem & ".") or targetURL contains ("." & domainItem & ".") or targetURL contains ("/" & domainItem & ".") or targetURL contains ("://" & domainItem & "/") or targetURL contains ("." & domainItem & "/") or targetURL contains domainItem then
-                    return true
-                end if
-            end if
-            if targetURL contains ("://" & domainItem & "/") or targetURL contains ("://" & domainItem & "?") or targetURL contains ("://" & domainItem & "#") or targetURL ends with ("://" & domainItem) or targetURL contains ("." & domainItem & "/") or targetURL contains ("." & domainItem & "?") or targetURL contains ("." & domainItem & "#") or targetURL ends with ("." & domainItem) or targetURL contains ("//" & domainItem & "/") or targetURL is equal to domainItem or targetURL contains ("://" & domainItem & ".") or targetURL contains ("." & domainItem & ".") then
-                return true
-            end if
-            return false
-        end checkDomainMatch
 
-        on checkTeraBoxMatch(targetURL, targetTitle)
-            set combined to (targetURL as text) & " " & (targetTitle as text)
-            if combined contains "terabox" or combined contains "teraboz" or combined contains "teraboc" or combined contains "teraz" or combined contains "terboz" or combined contains "terbox" or combined contains "teravox" or combined contains "terrabox" or combined contains "terraboz" or combined contains "terraboc" or combined contains "1024tera" or combined contains "freeterabox" or combined contains "terashare" or combined contains "terafileshare" or combined contains "teradownload" or combined contains "teraboxdl" or combined contains "teradl" or combined contains "tibibox" or combined contains "4funbox" or combined contains "mirrobox" or combined contains "nephobox" or combined contains "teraboxapp" or combined contains "teraboxlink" or combined contains "momerybox" or combined contains "boxtera" or combined contains "flowvideoplayer" or combined contains "tera box" or combined contains "tera boz" or combined contains "tera boc" or combined contains "tera z" then
-                return true
-            end if
-            return false
-        end checkTeraBoxMatch
+    private var compiledScripts: [String: NSAppleScript] = [:]
+    private var cachedRules: [String: BrowserTabRules] = [:]
+    private var tabSeenURL: [String: String] = [:]
+    private var tabSeenSince: [String: Date] = [:]
+    private var tabTextCheckedAt: [String: Date] = [:]
 
-        on checkKeywordMatch(targetURL, targetTitle, kw)
-            set combined to (targetTitle as text) & " " & (targetURL as text)
-            set prevDelims to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to {" ", "+", "%20", "-", "_", "/", "?", "=", "&", ".", ",", ":", ";", "(", ")", "[", "]", "'", "\\"", "!", "@", "#", "$", "%", "^", "*", "~", "`", "<", ">", "|", "\\\\"}
-            set textParts to text items of combined
-            set AppleScript's text item delimiters to " "
-            set normalized to " " & (textParts as text) & " "
-            set AppleScript's text item delimiters to prevDelims
-            if normalized contains (" " & kw & " ") then
-                return true
-            end if
-            return false
-        end checkKeywordMatch
-
-        on encodeForURL(txt)
-            set prevDelims to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to " "
-            set txtList to text items of txt
-            set AppleScript's text item delimiters to "%20"
-            set res to txtList as text
-            set AppleScript's text item delimiters to prevDelims
-            return res
-        end encodeForURL
-
-        set allowedList to {\(allowedListFormatted)}
-        set blockedList to {\(domainListFormatted)}
-        set keywordsList to {\(keywordsFormatted)}
-        set blockedFound to ""
-        
-        tell application "\(appName)"
-            try
-                repeat with w in windows
-                    repeat with t in (tabs of w as list)
-                        set currentURL to URL of t
-                        set currentTitle to title of t
-                        if currentURL is not missing value and currentURL is not "" and currentURL does not start with "chrome://" and currentURL does not start with "edge://" and currentURL does not start with "brave://" and currentURL does not start with "file://" and currentURL does not contain "127.0.0.1:8484" and currentURL does not contain "localhost:8484" and currentURL does not start with "http://127.0.0.1" and currentURL does not start with "http://localhost" then
-                            
-                            -- 0. VERIFICACIÓN ULTRA-ESTRICTA DE TERABOX (URL y Título del Buscador / Página)
-                            if \(isTeraBoxStrict ? "true" : "false") then
-                                if my checkTeraBoxMatch(currentURL, currentTitle) then
-                                    set blockedFound to "TeraBox Detectado"
-                                    set URL of t to ("http://127.0.0.1:8484/?site=" & (my encodeForURL(blockedFound)))
-                                end if
-                            end if
-                            
-                            -- 1. VERIFICACIÓN DE PALABRAS PROHIBIDAS (Tokenizado de palabras completas)
-                            if blockedFound is "" and (count of keywordsList) > 0 then
-                                repeat with kw in keywordsList
-                                    if my checkKeywordMatch(currentURL, currentTitle, kw) then
-                                        set blockedFound to ("Búsqueda: " & kw)
-                                        set URL of t to ("http://127.0.0.1:8484/?site=" & (my encodeForURL(blockedFound)))
-                                        exit repeat
-                                    end if
-                                end repeat
-                            end if
-                            
-                            -- 2. VERIFICACIÓN DE DOMINIOS BLOQUEADOS Y LISTA BLANCA
-                            if blockedFound is "" then
-                                set isAllowed to false
-                                repeat with allowed in allowedList
-                                    if my checkDomainMatch(currentURL, allowed) then
-                                        set isAllowed to true
-                                        exit repeat
-                                    end if
-                                end repeat
-                                
-                                if isAllowed is false then
-                                    repeat with blocked in blockedList
-                                        if my checkDomainMatch(currentURL, blocked) then
-                                            set blockedFound to blocked
-                                            set URL of t to ("http://127.0.0.1:8484/?site=" & (my encodeForURL(blocked)))
-                                            exit repeat
-                                        end if
-                                    end repeat
-                                end if
-                            end if
-                        end if
-                    end repeat
-                end repeat
-            end try
-        end tell
-        return blockedFound
-        """
-        
+    /// AppleScript compilado una sola vez y reutilizado en cada pasada.
+    private func compiledScript(_ source: String) -> NSAppleScript? {
+        if let cached = compiledScripts[source] { return cached }
+        guard let script = NSAppleScript(source: source) else { return nil }
         var error: NSDictionary?
-        if let script = NSAppleScript(source: chromiumScript) {
-            let result = script.executeAndReturnError(&error)
-            let blockedDomain = result.stringValue ?? ""
-            if !blockedDomain.isEmpty {
-                notifyInterception(domain: blockedDomain, sourceApp: appName, isWhitelist: false)
-            }
-        }
+        script.compileAndReturnError(&error)
+        compiledScripts[source] = script
+        return script
     }
-    
-    // MARK: - 4. Modo Bloqueo Total (Solo Lista Blanca)
-    
-    private func enforceWhitelistInSafari(appName: String = "Safari") {
-        let allAllowed = buildAllowedSet()
-        let allowedListFormatted = allAllowed.filter { !$0.isEmpty }.map { "\"\($0)\"" }.joined(separator: ", ")
-        let isTeraBoxStrict = self.isAdultShieldEnabled || self.blockedKeywords.contains("terabox") || self.blockedDomains.contains(where: { $0.contains("terabox") })
-        
-        let safariScript = """
-        on checkDomainMatch(targetURL, domainItem)
-            if targetURL contains ("://" & domainItem & "/") or targetURL contains ("://" & domainItem & "?") or targetURL contains ("://" & domainItem & "#") or targetURL ends with ("://" & domainItem) or targetURL contains ("." & domainItem & "/") or targetURL contains ("." & domainItem & "?") or targetURL contains ("." & domainItem & "#") or targetURL ends with ("." & domainItem) or targetURL contains ("//" & domainItem & "/") or targetURL is equal to domainItem then
-                return true
-            end if
-            return false
-        end checkDomainMatch
 
-        on checkTeraBoxMatch(targetURL, targetTitle)
-            set combined to (targetURL as text) & " " & (targetTitle as text)
-            if combined contains "terabox" or combined contains "teraboz" or combined contains "teraboc" or combined contains "teraz" or combined contains "terboz" or combined contains "terbox" or combined contains "teravox" or combined contains "terrabox" or combined contains "terraboz" or combined contains "terraboc" or combined contains "1024tera" or combined contains "freeterabox" or combined contains "terashare" or combined contains "terafileshare" or combined contains "teradownload" or combined contains "teraboxdl" or combined contains "teradl" or combined contains "tibibox" or combined contains "4funbox" or combined contains "mirrobox" or combined contains "nephobox" or combined contains "teraboxapp" or combined contains "teraboxlink" or combined contains "momerybox" or combined contains "boxtera" or combined contains "flowvideoplayer" or combined contains "tera box" or combined contains "tera boz" or combined contains "tera boc" or combined contains "tera z" then
-                return true
-            end if
-            return false
-        end checkTeraBoxMatch
-
-        set allowedList to {\(allowedListFormatted)}
-        set blockedFound to ""
-        
-        tell application "\(appName)"
-            try
-                repeat with w in windows
-                    repeat with t in (tabs of w as list)
-                        set currentURL to URL of t
-                        set currentTitle to name of t
-                        if currentURL is not missing value and currentURL is not "" and currentURL does not start with "about:" and currentURL does not start with "favorites://" and currentURL does not start with "topsites://" and currentURL does not contain "127.0.0.1:8484" and currentURL does not contain "localhost:8484" and currentURL does not start with "http://127.0.0.1" and currentURL does not start with "http://localhost" then
-                            
-                            -- 0. VERIFICACIÓN ULTRA-ESTRICTA DE TERABOX INCLUSO EN LISTA BLANCA
-                            if \(isTeraBoxStrict ? "true" : "false") then
-                                if my checkTeraBoxMatch(currentURL, currentTitle) then
-                                    set blockedFound to "TeraBox Detectado"
-                                    set URL of t to "http://127.0.0.1:8484/?site=TeraBox%20Detectado"
-                                else
-                                    set pageText to ""
-                                    try
-                                        set pageText to text of t
-                                    end try
-                                    if pageText is not "" and (pageText contains "terabox" or pageText contains "teraboz" or pageText contains "teraboc" or pageText contains "1024tera" or pageText contains "freeterabox" or pageText contains "terashare" or pageText contains "teraboxdl" or pageText contains "terabox.com") then
-                                        set blockedFound to "TeraBox en Resultados"
-                                        set URL of t to "http://127.0.0.1:8484/?site=TeraBox%20en%20Resultados"
-                                    end if
-                                end if
-                            end if
-                            
-                            if blockedFound is "" then
-                                set isAllowed to false
-                                repeat with allowed in allowedList
-                                    if my checkDomainMatch(currentURL, allowed) then
-                                        set isAllowed to true
-                                        exit repeat
-                                    end if
-                                end repeat
-                                
-                                if isAllowed is false then
-                                    set blockedFound to currentURL
-                                    set URL of t to "http://127.0.0.1:8484/?site=bloqueo-total"
-                                end if
-                            end if
-                        end if
-                    end repeat
-                end repeat
-            end try
-        end tell
-        return blockedFound
-        """
-        
+    private func runScript(_ source: String, cached: Bool = true) -> NSAppleEventDescriptor? {
+        let script = cached ? compiledScript(source) : NSAppleScript(source: source)
         var error: NSDictionary?
-        if let script = NSAppleScript(source: safariScript) {
-            let result = script.executeAndReturnError(&error)
-            let rawUrl = result.stringValue ?? ""
-            if !rawUrl.isEmpty {
-                let domain = URL(string: rawUrl)?.host ?? rawUrl
-                notifyInterception(domain: domain, sourceApp: "Safari", isWhitelist: true)
-            }
-        }
+        return script?.executeAndReturnError(&error)
     }
-    
-    private func enforceWhitelistInChromium(appName: String) {
-        let allAllowed = buildAllowedSet()
-        let allowedListFormatted = allAllowed.filter { !$0.isEmpty }.map { "\"\($0)\"" }.joined(separator: ", ")
-        let isTeraBoxStrict = self.isAdultShieldEnabled || self.blockedKeywords.contains("terabox") || self.blockedDomains.contains(where: { $0.contains("terabox") })
-        
-        let chromiumScript = """
-        on checkDomainMatch(targetURL, domainItem)
-            if targetURL contains ("://" & domainItem & "/") or targetURL contains ("://" & domainItem & "?") or targetURL contains ("://" & domainItem & "#") or targetURL ends with ("://" & domainItem) or targetURL contains ("." & domainItem & "/") or targetURL contains ("." & domainItem & "?") or targetURL contains ("." & domainItem & "#") or targetURL ends with ("." & domainItem) or targetURL contains ("//" & domainItem & "/") or targetURL is equal to domainItem then
-                return true
-            end if
-            return false
-        end checkDomainMatch
 
-        on checkTeraBoxMatch(targetURL, targetTitle)
-            set combined to (targetURL as text) & " " & (targetTitle as text)
-            if combined contains "terabox" or combined contains "teraboz" or combined contains "teraboc" or combined contains "teraz" or combined contains "terboz" or combined contains "terbox" or combined contains "teravox" or combined contains "terrabox" or combined contains "terraboz" or combined contains "terraboc" or combined contains "1024tera" or combined contains "freeterabox" or combined contains "terashare" or combined contains "terafileshare" or combined contains "teradownload" or combined contains "teraboxdl" or combined contains "teradl" or combined contains "tibibox" or combined contains "4funbox" or combined contains "mirrobox" or combined contains "nephobox" or combined contains "teraboxapp" or combined contains "teraboxlink" or combined contains "momerybox" or combined contains "boxtera" or combined contains "flowvideoplayer" or combined contains "tera box" or combined contains "tera boz" or combined contains "tera boc" or combined contains "tera z" then
-                return true
-            end if
-            return false
-        end checkTeraBoxMatch
+    private func currentRules(whitelist: Bool) -> BrowserTabRules {
+        let key = whitelist ? "whitelist" : "rules"
+        if let rules = cachedRules[key] { return rules }
+        let isTeraBoxStrict = self.isAdultShieldEnabled
+            || self.blockedKeywords.contains("terabox")
+            || self.blockedDomains.contains(where: { $0.contains("terabox") })
+        let keywordsActive = self.isKeywordBlockerEnabled || self.isAdultShieldEnabled
+        let rules = BrowserTabRules(
+            mode: whitelist ? .whitelist : .rules,
+            allowed: Array(buildAllowedSet()),
+            blocked: whitelist ? [] : self.blockedDomains,
+            keywords: keywordsActive ? self.blockedKeywords : [],
+            isTeraBoxStrict: isTeraBoxStrict
+        )
+        cachedRules[key] = rules
+        return rules
+    }
 
-        set allowedList to {\(allowedListFormatted)}
-        set blockedFound to ""
-        
+    static func tabListScript(appName: String, isSafariLike: Bool) -> String {
+        let titleProperty = isSafariLike ? "name" : "title"
+        let activeExpression = isSafariLike ? "index of current tab of window 1" : "active tab index of window 1"
+        let privateExpression = isSafariLike ? "(«class pmnd» of window wi) is true" : "(mode of window wi) is \"incognito\""
+        // OJO: dentro de `tell application` la palabra `tab` es la CLASE pestaña
+        // del navegador, no el carácter tabulador. El separador se define fuera
+        // (antes se escribía la palabra «tab» y no se reconocía ninguna pestaña).
+        return """
+        set sep to (character id 9)
+        set nl to (character id 10)
+        set out to ""
         tell application "\(appName)"
             try
-                repeat with w in windows
-                    repeat with t in (tabs of w as list)
-                        set currentURL to URL of t
-                        set currentTitle to title of t
-                        if currentURL is not missing value and currentURL is not "" and currentURL does not start with "chrome://" and currentURL does not start with "edge://" and currentURL does not start with "brave://" and currentURL does not start with "file://" and currentURL does not contain "127.0.0.1:8484" and currentURL does not contain "localhost:8484" and currentURL does not start with "http://127.0.0.1" and currentURL does not start with "http://localhost" then
-                            
-                            -- 0. VERIFICACIÓN ULTRA-ESTRICTA DE TERABOX INCLUSO EN LISTA BLANCA
-                            if \(isTeraBoxStrict ? "true" : "false") then
-                                if my checkTeraBoxMatch(currentURL, currentTitle) then
-                                    set blockedFound to "TeraBox Detectado"
-                                    set URL of t to "http://127.0.0.1:8484/?site=TeraBox%20Detectado"
-                                end if
-                            end if
-                            
-                            if blockedFound is "" then
-                                set isAllowed to false
-                                repeat with allowed in allowedList
-                                    if my checkDomainMatch(currentURL, allowed) then
-                                        set isAllowed to true
-                                        exit repeat
-                                    end if
-                                end repeat
-                                
-                                if isAllowed is false then
-                                    set blockedFound to currentURL
-                                    set URL of t to "http://127.0.0.1:8484/?site=bloqueo-total"
-                                end if
-                            end if
-                        end if
-                    end repeat
+                set activeIndex to 0
+                try
+                    set activeIndex to \(activeExpression)
+                end try
+                set out to "ACTIVE" & sep & (activeIndex as text) & nl
+                repeat with wi from 1 to (count of windows)
+                    try
+                        if \(privateExpression) then set out to out & "PRIVATE" & sep & (wi as text) & nl
+                    end try
+                    try
+                        set tabURLs to URL of every tab of window wi
+                        set tabTitles to \(titleProperty) of every tab of window wi
+                        repeat with ti from 1 to (count of tabURLs)
+                            set u to item ti of tabURLs
+                            set n to item ti of tabTitles
+                            if u is missing value then set u to ""
+                            if n is missing value then set n to ""
+                            set out to out & (wi as text) & sep & (ti as text) & sep & u & sep & n & nl
+                        end repeat
+                    end try
                 end repeat
             end try
         end tell
-        return blockedFound
+        return out
         """
-        
-        var error: NSDictionary?
-        if let script = NSAppleScript(source: chromiumScript) {
-            let result = script.executeAndReturnError(&error)
-            let rawUrl = result.stringValue ?? ""
-            if !rawUrl.isEmpty {
-                let domain = URL(string: rawUrl)?.host ?? rawUrl
-                notifyInterception(domain: domain, sourceApp: appName, isWhitelist: true)
+    }
+
+    private func readTabs(appName: String, isSafariLike: Bool) -> TabSnapshot {
+        Self.parseTabList(runScript(Self.tabListScript(appName: appName, isSafariLike: isSafariLike))?.stringValue ?? "")
+    }
+
+    static func parseTabList(_ raw: String) -> TabSnapshot {
+        var snapshot = TabSnapshot()
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+            let parts = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
+            if parts.first == "ACTIVE", parts.count >= 2 {
+                snapshot.activeIndex = Int(parts[1]) ?? 0
+                continue
+            }
+            if parts.first == "PRIVATE", parts.count >= 2 {
+                if let window = Int(parts[1]) { snapshot.incognitoWindows.append(window) }
+                continue
+            }
+            guard parts.count == 4, let window = Int(parts[0]), let index = Int(parts[1]) else { continue }
+            snapshot.tabs.append(BrowserTab(window: window, index: index, url: parts[2], title: parts[3]))
+        }
+        return snapshot
+    }
+
+    private func redirectTab(appName: String, tab: BrowserTab, to url: String) {
+        let source = "tell application \"\(appName)\" to set URL of tab \(tab.index) of window \(tab.window) to \"\(sanitizeForAppleScript(url))\""
+        _ = runScript(source, cached: false)
+    }
+
+    /// ¿Toca leer el texto de esta pestaña? Solo la activa y las que acaban de
+    /// navegar (15 s, para cubrir la carga), como mucho cada 3 s.
+    private func shouldReadPageText(key: String, url: String, isActive: Bool, now: Date) -> Bool {
+        if tabSeenURL[key] != url {
+            tabSeenURL[key] = url
+            tabSeenSince[key] = now
+            tabTextCheckedAt[key] = .distantPast
+        }
+        let recentlyChanged = now.timeIntervalSince(tabSeenSince[key] ?? .distantPast) < 15
+        guard isActive || recentlyChanged else { return false }
+        guard now.timeIntervalSince(tabTextCheckedAt[key] ?? .distantPast) >= 3 else { return false }
+        tabTextCheckedAt[key] = now
+        return true
+    }
+
+    private func readPageText(appName: String, tab: BrowserTab) -> String {
+        let source = "tell application \"\(appName)\" to try\nreturn text of tab \(tab.index) of window \(tab.window)\nend try\nreturn \"\""
+        return runScript(source, cached: false)?.stringValue ?? ""
+    }
+
+    /// Aplica las reglas a las pestañas leídas y devuelve la URL de la pestaña
+    /// activa del frente tal como queda tras redirigir (para las estadísticas
+    /// de uso, sin otro AppleScript).
+    @discardableResult
+    private func enforceTabs(appName: String, isSafariLike: Bool, snapshot: TabSnapshot) -> String? {
+        let rules = currentRules(whitelist: self.isWhitelistMode)
+        let now = Date()
+        var activeTabURL = snapshot.activeTabURL
+        var firstDecision: BrowserTabRules.Decision?
+        var liveKeys = Set<String>()
+
+        for tab in snapshot.tabs {
+            guard BrowserTabRules.shouldInspect(url: tab.url, isSafariLike: isSafariLike) else { continue }
+            var decision = rules.evaluate(url: tab.url, title: tab.title)
+
+            // TeraBox en el contenido de la página (solo WebKit expone el texto).
+            if decision == nil && isSafariLike && rules.isTeraBoxStrict {
+                let key = "\(appName)|\(tab.window)|\(tab.index)"
+                liveKeys.insert(key)
+                let isActive = tab.window == 1 && tab.index == snapshot.activeIndex
+                if shouldReadPageText(key: key, url: tab.url, isActive: isActive, now: now) {
+                    decision = rules.evaluatePageText(readPageText(appName: appName, tab: tab))
+                }
+            }
+
+            if let decision {
+                let interventionURL = BrowserTabRules.interventionURL(for: decision)
+                redirectTab(appName: appName, tab: tab, to: interventionURL)
+                if tab.window == 1 && tab.index == snapshot.activeIndex { activeTabURL = interventionURL }
+                if firstDecision == nil { firstDecision = decision }
             }
         }
+
+        // Olvidar pestañas que ya no existen.
+        if isSafariLike {
+            let prefix = "\(appName)|"
+            for key in tabSeenURL.keys where key.hasPrefix(prefix) && !liveKeys.contains(key) {
+                tabSeenURL[key] = nil
+                tabSeenSince[key] = nil
+                tabTextCheckedAt[key] = nil
+            }
+        }
+
+        if let decision = firstDecision {
+            notifyInterception(domain: decision.reported, sourceApp: appName, isWhitelist: rules.mode == .whitelist)
+        }
+        return activeTabURL
     }
     
     private func sanitizeForAppleScript(_ string: String) -> String {
@@ -833,8 +584,17 @@ public final class BrowserWatchdogService {
     
     // MARK: - 3. Inspección Nativa Ultrarrápida de WebViews (Claude, ChatGPT, Safari Web Apps, Electron)
     
+    private var lastNativeInspection: Date = .distantPast
+
     private func inspectNativeWebAreas(runningApps: [NSRunningApplication]) {
         guard self.isKeywordBlockerEnabled || !self.blockedDomains.isEmpty || self.isAdultShieldEnabled else { return }
+        // Recorrer el árbol de accesibilidad (hasta 16 niveles) de VS Code,
+        // Claude, ChatGPT… obliga a esas apps a construirlo y gasta CPU en
+        // ellas también. Cada 3 s basta para estas apps (los navegadores se
+        // siguen revisando en cada pasada).
+        let now = Date()
+        guard now.timeIntervalSince(lastNativeInspection) >= 3 else { return }
+        lastNativeInspection = now
         
         let isTeraBoxStrict = self.isAdultShieldEnabled || self.blockedKeywords.contains("terabox") || self.blockedDomains.contains(where: { $0.contains("terabox") })
         
@@ -925,13 +685,9 @@ public final class BrowserWatchdogService {
                     return
                 }
                 
-                for blocked in self.blockedDomains {
-                    let cleanBlocked = blocked.lowercased().replacingOccurrences(of: "www.", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !cleanBlocked.isEmpty else { continue }
-                    if matchesDomainOrInstance(targetURL: lowerUrl, domainItem: cleanBlocked) {
-                        handleNativeWebAreaInterception(app: app, reason: cleanBlocked, url: activeUrl)
-                        return
-                    }
+                if let cleanBlocked = firstBlockedDomain(lowerUrl) {
+                    handleNativeWebAreaInterception(app: app, reason: cleanBlocked, url: activeUrl)
+                    return
                 }
             }
             
@@ -950,30 +706,21 @@ public final class BrowserWatchdogService {
     private func scanElementsForTeraBox(_ element: AXUIElement, depth: Int, count: inout Int) {
         guard depth < 12, count == 0 else { return }
         
-        var titleVal: AnyObject?
-        AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleVal)
-        if let title = titleVal as? String, !title.isEmpty, AdultBlockListProvider.containsTeraBoxSignature(title) {
+        // Título, valor, URL e hijos en una sola llamada (antes, cuatro).
+        let values = copyAttributes(element, [kAXTitleAttribute as String, kAXValueAttribute as String, "AXURL", kAXChildrenAttribute as String])
+        if let title = values[0] as? String, !title.isEmpty, AdultBlockListProvider.containsTeraBoxSignature(title) {
             count += 1
             return
         }
-        
-        var valVal: AnyObject?
-        AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valVal)
-        if let val = valVal as? String, !val.isEmpty, AdultBlockListProvider.containsTeraBoxSignature(val) {
+        if let val = values[1] as? String, !val.isEmpty, AdultBlockListProvider.containsTeraBoxSignature(val) {
             count += 1
             return
         }
-        
-        var urlVal: AnyObject?
-        AXUIElementCopyAttributeValue(element, "AXURL" as CFString, &urlVal)
-        if let urlStr = (urlVal as? String) ?? ((urlVal as? URL)?.absoluteString), !urlStr.isEmpty, AdultBlockListProvider.containsTeraBoxSignature(urlStr) {
+        if let urlStr = (values[2] as? String) ?? ((values[2] as? URL)?.absoluteString), !urlStr.isEmpty, AdultBlockListProvider.containsTeraBoxSignature(urlStr) {
             count += 1
             return
         }
-        
-        var childrenVal: AnyObject?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenVal) == .success,
-           let children = childrenVal as? [AXUIElement] {
+        if let children = values[3] as? [AXUIElement] {
             for child in children {
                 scanElementsForTeraBox(child, depth: depth + 1, count: &count)
                 if count > 0 { return }
@@ -1006,24 +753,113 @@ public final class BrowserWatchdogService {
         return nil
     }
     
+    /// Reglas para apps con WebViews (Claude, ChatGPT, VS Code…), preparadas
+    /// una sola vez por cambio de ajustes en vez de por cada elemento.
+    private struct NativeTextMatcher {
+        enum KeywordKind { case substring, token }
+        let isTeraBoxStrict: Bool
+        let keywords: [(keyword: String, kind: KeywordKind)]
+        let blocked: [String]
+        let blockedIndex: DomainIndex
+
+        /// Misma semántica que `matchesKeywordToken`, pero cada texto se pasa a
+        /// minúsculas y se parte en palabras UNA vez (antes: una vez por palabra
+        /// clave, 37 veces por elemento). Respeta el orden de las palabras clave.
+        func firstKeyword(in texts: [String]) -> String? {
+            guard !keywords.isEmpty else { return nil }
+            let lowered = texts.filter { !$0.isEmpty }.map { $0.lowercased() }
+            guard !lowered.isEmpty else { return nil }
+            var tokenSets: [Set<String>]?
+            for entry in keywords {
+                switch entry.kind {
+                case .substring:
+                    if lowered.contains(where: { $0.contains(entry.keyword) }) { return entry.keyword }
+                case .token:
+                    if tokenSets == nil {
+                        tokenSets = lowered.map {
+                            Set($0.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
+                        }
+                    }
+                    if tokenSets!.contains(where: { $0.contains(entry.keyword) }) { return entry.keyword }
+                }
+            }
+            return nil
+        }
+    }
+
+    private var cachedNativeMatcher: NativeTextMatcher?
+
+    private func nativeMatcher() -> NativeTextMatcher {
+        if let matcher = cachedNativeMatcher { return matcher }
+        let keywordsActive = self.isKeywordBlockerEnabled || self.isAdultShieldEnabled
+        let keywords: [(keyword: String, kind: NativeTextMatcher.KeywordKind)] = keywordsActive
+            ? self.blockedKeywords.compactMap { kw in
+                let clean = kw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                guard clean.count >= 2 else { return nil }
+                let substring = AdultBlockListProvider.containsTeraBoxSignature(clean) || clean.contains(" ")
+                return (clean, substring ? .substring : .token)
+            }
+            : []
+        let blocked = self.blockedDomains
+            .map { $0.lowercased().replacingOccurrences(of: "www.", with: "").trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let matcher = NativeTextMatcher(
+            isTeraBoxStrict: self.isAdultShieldEnabled
+                || self.blockedKeywords.contains("terabox")
+                || self.blockedDomains.contains(where: { $0.contains("terabox") }),
+            keywords: keywords,
+            blocked: blocked,
+            blockedIndex: DomainIndex(items: blocked) { item in
+                Self.instanceFragments.contains(where: { item.contains($0) }) || !item.contains(".")
+            }
+        )
+        cachedNativeMatcher = matcher
+        return matcher
+    }
+
+    /// Primer dominio bloqueado (en el orden de la lista) que coincide con la
+    /// URL según `matchesDomainOrInstance`, usando el índice en vez de recorrer
+    /// los ~1.200 dominios uno a uno.
+    private func firstBlockedDomain(_ lowerUrl: String) -> String? {
+        let matcher = nativeMatcher()
+        // `matchesDomainOrInstance` da positivo con CUALQUIER elemento si la URL
+        // es de TeraBox (salvo SSO): se conserva devolviendo el primero.
+        let isSSO = lowerUrl.contains("accounts.youtube.com") || lowerUrl.contains("accounts.google.com")
+            || lowerUrl.contains("/setsid") || lowerUrl.contains("/set_sid")
+        if !isSSO && (lowerUrl.contains("terabox") || lowerUrl.contains("1024tera") || lowerUrl.contains("freeterabox")) {
+            return matcher.blocked.first
+        }
+        return matcher.blockedIndex.firstMatch(in: lowerUrl) { matchesDomainOrInstance(targetURL: lowerUrl, domainItem: $0) }
+    }
+    
+    /// Varios atributos en UNA llamada al otro proceso (antes, una por atributo).
+    private func copyAttributes(_ element: AXUIElement, _ names: [String]) -> [AnyObject?] {
+        var values: CFArray?
+        let result = AXUIElementCopyMultipleAttributeValues(
+            element, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values
+        )
+        guard result == .success, let array = values as [AnyObject]?, array.count == names.count else {
+            return Array(repeating: nil, count: names.count)
+        }
+        return array.map { value -> AnyObject? in
+            // Un atributo ausente llega como AXValue de error.
+            if CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .axError { return nil }
+            return value
+        }
+    }
+
     private func inspectElementHierarchy(_ element: AXUIElement, app: NSRunningApplication, depth: Int) {
         guard depth < 16 else { return }
-        
-        var roleVal: AnyObject?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleVal)
-        let role = (roleVal as? String) ?? ""
+        let matcher = nativeMatcher()
+
+        let base = copyAttributes(element, [kAXRoleAttribute as String, kAXChildrenAttribute as String])
+        let role = (base[0] as? String) ?? ""
         
         if role == "AXWebArea" || role.contains("Web") || role == "AXTextField" || role == "AXStaticText" || role == "AXLink" || role == "AXHeading" {
-            var titleVal: AnyObject?
-            var urlVal: AnyObject?
-            var valueVal: AnyObject?
-            AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleVal)
-            AXUIElementCopyAttributeValue(element, "AXURL" as CFString, &urlVal)
-            AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueVal)
-            
-            let title = (titleVal as? String) ?? ""
-            let urlString = (urlVal as? String) ?? ((urlVal as? URL)?.absoluteString ?? "")
-            let valText = (valueVal as? String) ?? ""
+            let details = copyAttributes(element, [kAXTitleAttribute as String, "AXURL", kAXValueAttribute as String])
+            let title = (details[0] as? String) ?? ""
+            let urlString = (details[1] as? String) ?? ((details[1] as? URL)?.absoluteString ?? "")
+            let valText = (details[2] as? String) ?? ""
             
             // Ignorar vistas internas locales de la aplicación
             if urlString.contains("127.0.0.1:8484") || urlString.contains("localhost:8484") || urlString.contains("app.asar") {
@@ -1039,7 +875,7 @@ public final class BrowserWatchdogService {
             }
             
             // 0. Verificación Ultra-Estricta de TeraBox
-            if self.isAdultShieldEnabled || self.blockedKeywords.contains("terabox") || self.blockedDomains.contains(where: { $0.contains("terabox") }) {
+            if matcher.isTeraBoxStrict {
                 if AdultBlockListProvider.containsTeraBoxSignature(title) ||
                    AdultBlockListProvider.containsTeraBoxSignature(urlString) ||
                    AdultBlockListProvider.containsTeraBoxSignature(valText) {
@@ -1049,39 +885,22 @@ public final class BrowserWatchdogService {
             }
             
             // 1. Verificación de Palabras Prohibidas (Tokenización de palabras completas)
-            if (self.isKeywordBlockerEnabled || self.isAdultShieldEnabled) && !self.blockedKeywords.isEmpty {
-                for kw in self.blockedKeywords {
-                    let cleanKw = kw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard cleanKw.count >= 2 else { continue }
-                    
-                    if matchesKeywordToken(in: title, keyword: cleanKw) ||
-                       matchesKeywordToken(in: urlString, keyword: cleanKw) ||
-                       matchesKeywordToken(in: valText, keyword: cleanKw) {
-                        
-                        handleNativeWebAreaInterception(app: app, reason: "Búsqueda: \(cleanKw)", url: urlString)
-                        return
-                    }
-                }
+            if let keyword = matcher.firstKeyword(in: [title, urlString, valText]) {
+                handleNativeWebAreaInterception(app: app, reason: "Búsqueda: \(keyword)", url: urlString)
+                return
             }
             
             // 2. Verificación de Dominios Bloqueados e Instancias (redlib, pornhub, etc.)
             let lowerUrl = urlString.lowercased()
             if !lowerUrl.isEmpty && !lowerUrl.starts(with: "file:") {
-                for blocked in self.blockedDomains {
-                    let cleanBlocked = blocked.lowercased().replacingOccurrences(of: "www.", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !cleanBlocked.isEmpty else { continue }
-                    
-                    if matchesDomainOrInstance(targetURL: lowerUrl, domainItem: cleanBlocked) {
-                        handleNativeWebAreaInterception(app: app, reason: cleanBlocked, url: urlString)
-                        return
-                    }
+                if let cleanBlocked = firstBlockedDomain(lowerUrl) {
+                    handleNativeWebAreaInterception(app: app, reason: cleanBlocked, url: urlString)
+                    return
                 }
             }
         }
         
-        var childrenVal: AnyObject?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenVal) == .success,
-           let children = childrenVal as? [AXUIElement] {
+        if let children = base[1] as? [AXUIElement] {
             for child in children {
                 inspectElementHierarchy(child, app: app, depth: depth + 1)
             }
@@ -1108,6 +927,13 @@ public final class BrowserWatchdogService {
         return tokens.contains(cleanKw)
     }
     
+    private static let instanceFragments = [
+        "terabox", "1024tera", "4funbox", "mirrobox", "nephobox", "freeterabox", "tibibox",
+        "terashare", "terafileshare", "teradownload", "teraboxdl", "teraboxdownloader",
+        "teradl", "teradrive", "terasaver", "terafast", "teraboxlink",
+        "redlib", "libreddit", "teddit", "nitter", "proxitok", "invidious", "piped"
+    ]
+    
     private func matchesDomainOrInstance(targetURL: String, domainItem: String) -> Bool {
         // Exclusión explícita de endpoints de autenticación SSO de Google / YouTube
         if targetURL.contains("accounts.youtube.com") ||
@@ -1121,13 +947,7 @@ public final class BrowserWatchdogService {
             return true
         }
         
-        let instances = [
-            "terabox", "1024tera", "4funbox", "mirrobox", "nephobox", "freeterabox", "tibibox",
-            "terashare", "terafileshare", "teradownload", "teraboxdl", "teraboxdownloader",
-            "teradl", "teradrive", "terasaver", "terafast", "teraboxlink",
-            "redlib", "libreddit", "teddit", "nitter", "proxitok", "invidious", "piped"
-        ]
-        if instances.contains(where: { domainItem.contains($0) }) || !domainItem.contains(".") {
+        if Self.instanceFragments.contains(where: { domainItem.contains($0) }) || !domainItem.contains(".") {
             if targetURL.contains("://\(domainItem).") ||
                targetURL.contains(".\(domainItem).") ||
                targetURL.contains("/\(domainItem).") ||
@@ -1266,13 +1086,18 @@ public final class BrowserWatchdogService {
     private var lastActiveSocialDomain: String?
     private var lastSocialSampleTime: Date = Date()
     
-    private func trackActiveSocialUsage(runningBundleIds: Set<String>) {
+    /// `activeTabURLs`: URL de la pestaña activa de cada navegador leída en
+    /// esta misma pasada. Si está, se usa en vez de preguntar otra vez al
+    /// navegador con AppleScript.
+    private func trackActiveSocialUsage(runningBundleIds: Set<String>, activeTabURLs: [String: String] = [:]) {
         let frontApp = NSWorkspace.shared.frontmostApplication
         let frontBundleId = frontApp?.bundleIdentifier ?? ""
         
         var currentUrl: String?
         
-        if frontBundleId == "com.apple.Safari" {
+        if Self.socialTrackedBrowsers.contains(frontBundleId), let known = activeTabURLs[frontBundleId] {
+            currentUrl = known
+        } else if frontBundleId == "com.apple.Safari" {
             currentUrl = getActiveSafariTabUrl()
         } else if frontBundleId == "com.google.Chrome" {
             currentUrl = getActiveChromiumTabUrl(appName: "Google Chrome")
@@ -1354,23 +1179,20 @@ public final class BrowserWatchdogService {
         }
     }
     
+    /// Navegadores cuyo tiempo en redes sociales se mide (los de la cadena de
+    /// `if` de `trackActiveSocialUsage`).
+    private static let socialTrackedBrowsers: Set<String> = [
+        "com.apple.Safari", "com.google.Chrome", "com.brave.Browser", "company.thebrowser.Arc",
+        "com.microsoft.edgemac", "com.operasoftware.Opera", "com.vivaldi.Vivaldi",
+    ]
+
     private func getActiveSafariTabUrl() -> String? {
         let script = "tell application \"Safari\" to try\nreturn URL of current tab of front window\nend try\nreturn \"\""
-        if let s = NSAppleScript(source: script) {
-            var err: NSDictionary?
-            let res = s.executeAndReturnError(&err)
-            return res.stringValue
-        }
-        return nil
+        return runScript(script)?.stringValue
     }
     
     private func getActiveChromiumTabUrl(appName: String) -> String? {
         let script = "tell application \"\(appName)\" to try\nreturn URL of active tab of front window\nend try\nreturn \"\""
-        if let s = NSAppleScript(source: script) {
-            var err: NSDictionary?
-            let res = s.executeAndReturnError(&err)
-            return res.stringValue
-        }
-        return nil
+        return runScript(script)?.stringValue
     }
 }

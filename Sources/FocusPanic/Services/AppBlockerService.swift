@@ -136,6 +136,9 @@ public final class AppBlockerService {
             self.timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 self?.terminateRunningBlockedApps()
             }
+            // Respaldo de los observadores de lanzamiento/activación: permitir
+            // que macOS agrupe este despertar con otros (impacto energético).
+            self.timer?.tolerance = 0.3
         }
     }
     

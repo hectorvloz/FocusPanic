@@ -10,8 +10,13 @@ public final class WhatsAppStatusWatcherService {
     private var isStatusEnabled = true
     private var isChannelsEnabled = true
     private var lastInterceptionTime: Date = Date.distantPast
-    private let watcherQueue = DispatchQueue(label: "com.hector.FocusPanic.whatsAppWatcher", qos: .userInteractive)
+    private let watcherQueue = DispatchQueue(label: "com.hector.FocusPanic.whatsAppWatcher", qos: .utility)
     private var isChecking = false
+    /// Última revisión con WhatsApp visible pero en segundo plano.
+    private var lastBackgroundCheck: Date = .distantPast
+    /// Con WhatsApp en segundo plano (visible detrás de otra app) basta con
+    /// revisar cada 2 s; al frente se sigue revisando cada 0,4 s.
+    private static let backgroundCheckInterval: TimeInterval = 2.0
     
     private init() {}
     
@@ -27,6 +32,8 @@ public final class WhatsAppStatusWatcherService {
             let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
                 self?.checkWhatsAppActivity()
             }
+            // Margen para que macOS agrupe los despertares (menos energía).
+            t.tolerance = 0.1
             RunLoop.main.add(t, forMode: .common)
             self.timer = t
         }
@@ -67,6 +74,17 @@ public final class WhatsAppStatusWatcherService {
                 return bundle == "net.whatsapp.whatsapp" || bundle.contains("whatsapp") || name.contains("whatsapp")
             }) else { return }
             
+            // Recorrer el árbol de accesibilidad de WhatsApp gasta CPU aquí y en
+            // WhatsApp. Si está oculto no se ve nada; si está detrás de otra
+            // app, se revisa con menos frecuencia.
+            if app.isHidden { return }
+            let isFrontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
+            if !isFrontmost {
+                let now = Date()
+                guard now.timeIntervalSince(self.lastBackgroundCheck) >= Self.backgroundCheckInterval else { return }
+                self.lastBackgroundCheck = now
+            }
+            
             let pid = app.processIdentifier
             let appElement = AXUIElementCreateApplication(pid)
             
@@ -77,6 +95,12 @@ public final class WhatsAppStatusWatcherService {
             }
             
             for window in windows {
+                // Una ventana minimizada no muestra nada.
+                var minimized: AnyObject?
+                if AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized) == .success,
+                   (minimized as? Bool) == true {
+                    continue
+                }
                 let texts = self.extractAccessibilityTexts(window, maxDepth: 7)
                 let combinedText = texts.joined(separator: " ").lowercased()
                 
