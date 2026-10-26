@@ -238,7 +238,7 @@ public final class FocusEngine: ObservableObject {
             settings.allowedApps = AppSettings.defaultAllowedApps
             updated = true
         }
-        if settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !GuardService.shared.holdsPin {
             settings.masterCompanionPassword = "1234"
             settings.isMasterPasswordEnabled = true
             updated = true
@@ -377,6 +377,8 @@ public final class FocusEngine: ObservableObject {
         self.settings.hasCompletedOnboarding = true
         self.isShowingOnboarding = false
         self.saveSettings()
+        // El PIN y la respuesta del onboarding se guardan en texto plano hasta que hay guardián
+        migrateCompanionSecretsToGuardIfNeeded()
     }
     
     // MARK: - Gestión del Escudo Permanente 24/7
@@ -751,8 +753,7 @@ public final class FocusEngine: ObservableObject {
     }
     
     public func performUninstall(companionPin: String) -> Bool {
-        let master = settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !master.isEmpty && companionPin == master else {
+        guard hasCompanionPin, checkCompanionSecret(companionPin) == .ok else {
             let partner = settings.officialPartnerEmail
             if settings.isPartnerAlertUninstallEnabled && !partner.isEmpty {
                 EmailService.shared.sendTamperAlert(toEmail: partner, actionDetail: "Intento de desinstalar FocusPanic del sistema con PIN incorrecto.")
@@ -767,9 +768,15 @@ public final class FocusEngine: ObservableObject {
         try? task.run()
         task.waitUntilExit()
         
-        try? HostBlockerService.shared.clearAllBlocks()
-        try? HostBlockerService.shared.uninstallHelper()
+        if GuardService.shared.isActive {
+            // Quita guardián, helper, sudoers y bloqueos sin pedir contraseña de administrador
+            guard GuardService.shared.uninstall(pin: companionPin) == .ok else { return false }
+        } else {
+            try? HostBlockerService.shared.clearAllBlocks()
+            try? HostBlockerService.shared.uninstallHelper()
+        }
         
+        AppDelegate.shared?.authorizeTermination()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             let rmTask = Process()
             rmTask.executableURL = URL(fileURLWithPath: "/bin/rm")
@@ -1232,20 +1239,101 @@ public final class FocusEngine: ObservableObject {
     }
     
     public func verifyCompanionPassword(_ entered: String) -> Bool {
-        let cleanEntered = entered.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanEntered.isEmpty else { return false }
-        
-        let master = settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !master.isEmpty && cleanEntered == master {
-            return true
+        checkCompanionSecret(entered, acceptAnswer: true) == .ok
+    }
+    
+    // MARK: - PIN del Compañero
+    // Con el guardián instalado el PIN y la respuesta solo existen como hash en un directorio de root;
+    // sin él (helper antiguo o sin instalar) se siguen usando los valores de AppSettings.
+    
+    /// Último PIN o respuesta verificados con éxito, solo en memoria, para autorizar cambios
+    /// posteriores en el guardián (cambiar PIN o respuesta) sin pedirlo otra vez.
+    public private(set) var lastVerifiedCompanionSecret = ""
+    
+    public var hasCompanionPin: Bool {
+        GuardService.shared.holdsPin || !settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    /// Con el guardián el PIN no se puede desactivar desde Ajustes (ni editando UserDefaults).
+    public var isCompanionPinEnforced: Bool {
+        GuardService.shared.holdsPin || (settings.isMasterPasswordEnabled && hasCompanionPin)
+    }
+    
+    public var companionPinDigits: Int {
+        if GuardService.shared.holdsPin { return max(4, settings.companionPinLength) }
+        return max(4, settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines).count)
+    }
+    
+    /// Comprueba el PIN del compañero (y la respuesta de seguridad si `acceptAnswer`).
+    /// Sin PIN configurado no hay nada que proteger y se acepta cualquier entrada.
+    public func checkCompanionSecret(_ entered: String, acceptAnswer: Bool = false) -> GuardService.SecretCheck {
+        let clean = entered.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result: GuardService.SecretCheck
+        if GuardService.shared.holdsPin {
+            result = GuardService.shared.verify(clean, acceptAnswer: acceptAnswer)
+        } else {
+            let master = settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            let answer = GuardService.normalize(settings.securityAnswer)
+            if master.isEmpty && !acceptAnswer {
+                result = .ok
+            } else if !clean.isEmpty && (clean == master || (acceptAnswer && !answer.isEmpty && clean.lowercased() == answer)) {
+                result = .ok
+            } else {
+                result = .denied
+            }
         }
-        
-        let secAnswer = settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !secAnswer.isEmpty && cleanEntered.lowercased() == secAnswer {
-            return true
+        if result == .ok { lastVerifiedCompanionSecret = clean }
+        return result
+    }
+    
+    /// Cambia el PIN y/o la respuesta de seguridad. `currentSecret` es el PIN o la respuesta vigentes
+    /// (el guardián los exige; sin guardián se ignora porque la vista ya pidió el PIN).
+    @discardableResult
+    public func updateCompanionSecrets(currentSecret: String, newPin: String? = nil, newAnswer: String? = nil) -> GuardService.SecretCheck {
+        let pin = newPin?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let answer = newAnswer?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if GuardService.shared.isActive {
+            let result = GuardService.shared.setSecrets(currentSecret: currentSecret, newPin: pin, newAnswer: answer)
+            guard result == .ok else { return result }
+            settings.masterCompanionPassword = ""
+            settings.securityAnswer = ""
+        } else {
+            if let pin { settings.masterCompanionPassword = pin }
+            if let answer { settings.securityAnswer = answer }
         }
+        if let pin { settings.companionPinLength = pin.count }
+        settings.isMasterPasswordEnabled = true
+        saveSettings()
+        return .ok
+    }
+    
+    /// Pasa al guardián el PIN y la respuesta que sigan en texto plano en AppSettings (instalaciones
+    /// anteriores, u onboarding hecho antes de instalar el helper) y los borra de UserDefaults.
+    public func migrateCompanionSecretsToGuardIfNeeded() {
+        let guardService = GuardService.shared
+        guard guardService.isActive else { return }
+        // Versiones antiguas guardaban los ajustes (con el PIN en texto plano) bajo otra clave
+        UserDefaults.standard.removeObject(forKey: "FocusPanic_AppSettings_v1")
+        let pin = settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let answer = settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pin.isEmpty || !answer.isEmpty else { return }
         
-        return false
+        if !guardService.holdsPin {
+            let result = guardService.setSecrets(
+                currentSecret: "",
+                newPin: pin.isEmpty ? nil : pin,
+                newAnswer: answer.isEmpty ? nil : answer
+            )
+            guard result == .ok else { return }
+            if !pin.isEmpty { settings.companionPinLength = pin.count }
+        } else if !answer.isEmpty && !guardService.status.hasAnswer && !pin.isEmpty {
+            _ = guardService.setSecrets(currentSecret: pin, newPin: nil, newAnswer: answer)
+        }
+        // Si el guardián ya tenía PIN, lo que quede en texto plano sobra (o lo escribió alguien a mano).
+        settings.masterCompanionPassword = ""
+        settings.securityAnswer = ""
+        settings.isMasterPasswordEnabled = true
+        saveSettings()
     }
     
     // MARK: - Métodos de Control Anti-Incógnito y Palabras Prohibidas
@@ -1600,40 +1688,36 @@ public final class FocusEngine: ObservableObject {
     }
     
     public func unlockInstantlyWithMasterPassword() {
-        let entered = enteredMasterPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let actual = settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard settings.isMasterPasswordEnabled else {
+        guard isCompanionPinEnforced else {
             emergencyErrorMessage = "La clave del compañero está desactivada en Ajustes."
             return
         }
         
-        if entered == actual && !actual.isEmpty {
+        let result = checkCompanionSecret(enteredMasterPassword)
+        if result == .ok {
             self.isEmergencyModalPresented = false
             self.enteredMasterPassword = ""
             self.emergencyErrorMessage = nil
             endSession(didCompleteNormally: false)
         } else {
-            emergencyErrorMessage = "Clave incorrecta. Pídesela a tu compañero."
+            emergencyErrorMessage = GuardService.message(for: result)
         }
     }
     
     public func unlockWithSecurityAnswer(_ answer: String) -> Bool {
-        let clean = answer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let expected = settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        
-        guard !expected.isEmpty else {
+        if !GuardService.shared.holdsPin && GuardService.normalize(settings.securityAnswer).isEmpty {
             emergencyErrorMessage = "No se configuró una respuesta secreta."
             return false
         }
         
-        if clean == expected {
+        let result = checkCompanionSecret(answer, acceptAnswer: true)
+        if result == .ok {
             self.isEmergencyModalPresented = false
             self.emergencyErrorMessage = nil
             endSession(didCompleteNormally: false)
             return true
         } else {
-            emergencyErrorMessage = "Respuesta secreta incorrecta."
+            emergencyErrorMessage = result == .denied ? "Respuesta secreta incorrecta." : GuardService.message(for: result)
             return false
         }
     }

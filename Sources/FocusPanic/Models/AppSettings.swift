@@ -50,6 +50,8 @@ public struct AppSettings: Codable, Equatable {
     
     public var masterCompanionPassword: String
     public var isMasterPasswordEnabled: Bool
+    /// Solo para mostrar cuántos dígitos pedir cuando el PIN vive como hash en el guardián.
+    public var companionPinLength: Int = 4
     public var unlockDelayMinutes: Int
     public var reflectionPhrase: String
     public var isReflectionRequired: Bool
@@ -296,6 +298,7 @@ public struct AppSettings: Codable, Equatable {
         self.isPartnerAlertSocialLimitEnabled = try container.decodeIfPresent(Bool.self, forKey: .isPartnerAlertSocialLimitEnabled) ?? true
         self.masterCompanionPassword = try container.decodeIfPresent(String.self, forKey: .masterCompanionPassword) ?? ""
         self.isMasterPasswordEnabled = try container.decodeIfPresent(Bool.self, forKey: .isMasterPasswordEnabled) ?? false
+        self.companionPinLength = try container.decodeIfPresent(Int.self, forKey: .companionPinLength) ?? 4
         self.unlockDelayMinutes = try container.decodeIfPresent(Int.self, forKey: .unlockDelayMinutes) ?? 3
         self.reflectionPhrase = try container.decodeIfPresent(String.self, forKey: .reflectionPhrase) ?? AppSettings.defaultReflectionPhrase
         self.isReflectionRequired = try container.decodeIfPresent(Bool.self, forKey: .isReflectionRequired) ?? true

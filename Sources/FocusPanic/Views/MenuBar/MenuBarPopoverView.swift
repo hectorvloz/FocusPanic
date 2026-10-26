@@ -76,7 +76,7 @@ public struct MenuBarPopoverView: View {
                 
                 // Controles de Reproducción / Detención
                 HStack(spacing: 8) {
-                    if engine.settings.isMasterPasswordEnabled {
+                    if engine.isCompanionPinEnforced {
                         Button(action: { openAppEmergencyUnlock() }) {
                             Image(systemName: "key.fill")
                                 .font(.system(size: 16, weight: .bold))

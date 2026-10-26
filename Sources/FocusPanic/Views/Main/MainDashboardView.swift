@@ -524,7 +524,7 @@ public struct MainDashboardView: View {
             Spacer()
             
             Group {
-                if engine.settings.isMasterPasswordEnabled {
+                if engine.isCompanionPinEnforced {
                     Button(action: {
                         engine.initiateEmergencyUnlock()
                     }) {

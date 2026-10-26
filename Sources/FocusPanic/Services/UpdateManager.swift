@@ -262,7 +262,10 @@ public final class UpdateManager: NSObject, ObservableObject {
             # 5. Quitar atributos de cuarentena
             xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
             
-            # 6. Reabrir FocusPanic actualizado y terminar el proceso actual
+            # 6. Actualizar la copia que restaura el guardián (sin efecto si no está instalado)
+            sudo -n /usr/local/bin/focuspanic-helper sync-app >/dev/null 2>&1 || true
+            
+            # 7. Reabrir FocusPanic actualizado y terminar el proceso actual
             sleep 1.2
             open -n "$TARGET_APP"
             """

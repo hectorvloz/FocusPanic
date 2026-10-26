@@ -108,7 +108,7 @@ public struct SettingsContainerView: View {
     
     public var body: some View {
         ZStack(alignment: .topTrailing) {
-            if isUnlocked || !engine.settings.isMasterPasswordEnabled {
+            if isUnlocked || !engine.isCompanionPinEnforced {
                 unlockedSettingsLayout
             } else {
                 masterLockedView
@@ -170,7 +170,7 @@ public struct SettingsContainerView: View {
             
             PasscodeKeypadView(
                 pin: $enteredPin,
-                maxDigits: max(4, engine.settings.masterCompanionPassword.count),
+                maxDigits: engine.companionPinDigits,
                 title: "",
                 subtitle: "Ingresa el PIN de tu compañero:",
                 tintColor: Color(hex: "#F43F5E"),
@@ -224,11 +224,9 @@ public struct SettingsContainerView: View {
     }
     
     private func verifyMasterPin() {
-        let clean = enteredPin.trimmingCharacters(in: .whitespacesAndNewlines)
-        let master = engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isMatch = (!master.isEmpty && clean == master) || master.isEmpty
+        let result = engine.checkCompanionSecret(enteredPin)
         
-        if isMatch {
+        if result == .ok {
             withAnimation(.spring()) {
                 isSuccess = true
                 errorMessage = nil
@@ -245,7 +243,9 @@ public struct SettingsContainerView: View {
         } else {
             SoundService.shared.play("Basso")
             failedPinAttempts += 1
-            if failedPinAttempts >= 3 {
+            if case .locked = result {
+                errorMessage = GuardService.message(for: result)
+            } else if failedPinAttempts >= 3 {
                 errorMessage = "Clave incorrecta (Intento \(failedPinAttempts)). Puedes recuperar el acceso abajo."
             } else {
                 errorMessage = "Clave incorrecta (Intento \(failedPinAttempts) de 3). Pídesela a tu compañero."
@@ -549,14 +549,21 @@ public struct SettingsContainerView: View {
             return
         }
         
-        // 2. Validar según método
+        // 2. Validar según método y aplicar el nuevo PIN
         if recoveryMethodIndex == 0 {
             let cleanAnswer = recoverySecurityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let expectedAnswer = engine.settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            
-            let isCorrect = !expectedAnswer.isEmpty && cleanAnswer == expectedAnswer
-            guard isCorrect else {
-                recoveryErrorMessage = "Respuesta de seguridad incorrecta."
+            if !GuardService.shared.isActive {
+                let expectedAnswer = engine.settings.securityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !expectedAnswer.isEmpty && cleanAnswer == expectedAnswer else {
+                    recoveryErrorMessage = "Respuesta de seguridad incorrecta."
+                    SoundService.shared.play("Basso")
+                    return
+                }
+            }
+            // Con el guardián es él quien comprueba la respuesta (con límite de intentos)
+            let result = engine.updateCompanionSecrets(currentSecret: cleanAnswer, newPin: recoveryNewPin)
+            guard result == .ok else {
+                recoveryErrorMessage = result == .denied ? "Respuesta de seguridad incorrecta." : GuardService.message(for: result)
                 SoundService.shared.play("Basso")
                 return
             }
@@ -567,12 +574,20 @@ public struct SettingsContainerView: View {
                 SoundService.shared.play("Basso")
                 return
             }
+            // El guardián no puede comprobar un código de correo: borrar el PIN guardado exige
+            // además la contraseña de administrador de macOS.
+            if GuardService.shared.holdsPin && !GuardService.shared.resetSecretsWithAdminPassword() {
+                recoveryErrorMessage = "Hace falta la contraseña de administrador de macOS para restablecer el PIN."
+                SoundService.shared.play("Basso")
+                return
+            }
+            let result = engine.updateCompanionSecrets(currentSecret: "", newPin: recoveryNewPin)
+            guard result == .ok else {
+                recoveryErrorMessage = GuardService.message(for: result)
+                SoundService.shared.play("Basso")
+                return
+            }
         }
-        
-        // 3. Aplicar nuevo PIN y desbloquear
-        engine.settings.masterCompanionPassword = recoveryNewPin
-        engine.settings.isMasterPasswordEnabled = true
-        engine.saveSettings()
         
         failedPinAttempts = 0
         recoverySuccessMessage = "¡Clave restablecida exitosamente! Accediendo..."
@@ -834,7 +849,7 @@ public struct PermanentShieldView: View {
     
     public var body: some View {
         Group {
-            if !isUnlocked && engine.settings.isMasterPasswordEnabled && !engine.settings.masterCompanionPassword.isEmpty {
+            if !isUnlocked && engine.isCompanionPinEnforced {
                 lockedShieldView
             } else {
                 unlockedShieldContent
@@ -888,7 +903,7 @@ public struct PermanentShieldView: View {
             
             PasscodeKeypadView(
                 pin: $enteredPassword,
-                maxDigits: max(4, engine.settings.masterCompanionPassword.count),
+                maxDigits: engine.companionPinDigits,
                 title: "",
                 subtitle: "Ingresa el PIN de tu compañero:",
                 tintColor: Color(hex: "#E11D48"),
@@ -919,11 +934,9 @@ public struct PermanentShieldView: View {
     }
     
     private func verifyPassword() {
-        let clean = enteredPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let master = engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isMatch = (!master.isEmpty && clean == master) || master.isEmpty
+        let result = engine.checkCompanionSecret(enteredPassword)
         
-        if isMatch {
+        if result == .ok {
             withAnimation(.spring()) {
                 isSuccess = true
                 errorMessage = nil
@@ -938,7 +951,7 @@ public struct PermanentShieldView: View {
             }
         } else {
             SoundService.shared.play("Basso")
-            errorMessage = "Clave incorrecta. Pídesela a tu compañero."
+            errorMessage = GuardService.message(for: result)
         }
     }
     

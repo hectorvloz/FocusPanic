@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 
 public final class HostBlockerService {
@@ -30,65 +31,30 @@ public final class HostBlockerService {
         return content.contains(beginTag) && content.contains(endTag)
     }
     
-    /// Instalar helper + sudoers UNA SOLA VEZ
+    /// Instala (o actualiza a la v2) el helper, la regla de sudoers y el guardián. Pide la
+    /// contraseña de administrador una sola vez.
     public func installHelper() throws {
-        let helperContent = """
-        #!/bin/bash
-        ACTION="$1"
-        HOSTS="/etc/hosts"
-        case "$ACTION" in
-            apply)
-                if [ -f "$2" ]; then
-                    cp -f "$2" "$HOSTS"
-                    chmod 644 "$HOSTS"
-                    networksetup -listallnetworkservices 2>/dev/null | grep -v '^\\*' | grep -v 'An asterisk' | while IFS= read -r iface; do
-                        [ -n "$iface" ] && networksetup -setdnsservers "$iface" 1.1.1.3 1.0.0.3 2606:4700:4700::1113 2606:4700:4700::1003 2>/dev/null || true
-                    done
-                    killall -HUP mDNSResponder 2>/dev/null || true
-                    dscacheutil -flushcache 2>/dev/null || true
-                    rm -f "$2"
-                    echo "OK"
-                else
-                    echo "ERROR" && exit 1
-                fi
-                ;;
-            apply-family-dns)
-                networksetup -listallnetworkservices 2>/dev/null | grep -v '^\\*' | grep -v 'An asterisk' | while IFS= read -r iface; do
-                    [ -n "$iface" ] && networksetup -setdnsservers "$iface" 1.1.1.3 1.0.0.3 2606:4700:4700::1113 2606:4700:4700::1003 2>/dev/null || true
-                done
-                killall -HUP mDNSResponder 2>/dev/null || true
-                dscacheutil -flushcache 2>/dev/null || true
-                echo "OK"
-                ;;
-            remove)
-                if grep -q "BEGIN FOCUSPANIC" "$HOSTS"; then
-                    sed -i '' '/# >>> BEGIN FOCUSPANIC BLOCK/,/# <<< END FOCUSPANIC BLOCK/d' "$HOSTS"
-                    chmod 644 "$HOSTS"
-                fi
-                networksetup -listallnetworkservices 2>/dev/null | grep -v '^\\*' | grep -v 'An asterisk' | while IFS= read -r iface; do
-                    [ -n "$iface" ] && networksetup -setdnsservers "$iface" "Empty" 2>/dev/null || true
-                done
-                killall -HUP mDNSResponder 2>/dev/null || true
-                dscacheutil -flushcache 2>/dev/null || true
-                echo "OK"
-                ;;
-            flush)
-                killall -HUP mDNSResponder 2>/dev/null || true
-                dscacheutil -flushcache 2>/dev/null || true
-                echo "OK"
-                ;;
-            *)
-                echo "Usage: focuspanic-helper {apply|apply-family-dns|remove|flush} [file]"; exit 1;;
-        esac
-        """
+        let tempHelper = "/tmp/focuspanic-helper-install-\(UUID().uuidString).sh"
+        try GuardHelperScript.content.write(toFile: tempHelper, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: tempHelper) }
         
-        let tempHelper = "/tmp/focuspanic-helper-install.sh"
-        try helperContent.write(toFile: tempHelper, atomically: true, encoding: String.Encoding.utf8)
-        
+        // Otro proceso del usuario podría cambiar el archivo temporal antes de copiarlo como root:
+        // solo se instala si el hash coincide con el script que trae la app.
+        let expectedHash = sha256Hex(of: GuardHelperScript.content)
         let username = NSUserName()
-        let installCmd = "cp -f '\(tempHelper)' /usr/local/bin/focuspanic-helper && chmod 755 /usr/local/bin/focuspanic-helper && echo '\(username) ALL=(ALL) NOPASSWD: /usr/local/bin/focuspanic-helper' > /etc/sudoers.d/focuspanic && chmod 0440 /etc/sudoers.d/focuspanic && rm -f '\(tempHelper)'"
+        let guardDir = "/Library/Application Support/FocusPanic/guard"
+        let installCmd = [
+            "[ \"$(shasum -a 256 < '\(tempHelper)' | cut -c1-64)\" = '\(expectedHash)' ]",
+            "mkdir -p '\(guardDir)'",
+            "cp -f '\(tempHelper)' \(helperPath)",
+            "chown root:wheel \(helperPath)",
+            "chmod 755 \(helperPath)",
+            "echo '\(username) ALL=(ALL) NOPASSWD: \(helperPath)' > /etc/sudoers.d/focuspanic",
+            "chmod 0440 /etc/sudoers.d/focuspanic",
+            "\(helperPath) install-daemon"
+        ].joined(separator: " && ")
         
-        let escapedCmd = installCmd.replacingOccurrences(of: "\"", with: "\\\"")
+        let escapedCmd = installCmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = "do shell script \"\(escapedCmd)\" with administrator privileges with prompt \"FocusPanic: Configuración única de permisos.\""
         
         var error: NSDictionary?
@@ -101,7 +67,8 @@ public final class HostBlockerService {
         }
         
         let testSuccess = runHelper(args: ["flush"])
-        if !testSuccess {
+        GuardService.shared.refreshStatus()
+        if !testSuccess || !GuardService.shared.isActive {
             throw NSError(domain: "FocusPanic", code: 2, userInfo: [NSLocalizedDescriptionKey: "Error al verificar el ayudante de bloqueo."])
         }
     }
@@ -420,10 +387,15 @@ public final class HostBlockerService {
         let blockSection = "\n" + lines.joined(separator: "\n") + "\n"
         let newContent = cleanedContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + blockSection
         
+        // El helper v2 recibe el contenido por stdin; el v1 todavía espera la ruta de un archivo temporal.
+        if GuardService.shared.isActive, runHelper(args: ["apply"], input: newContent) {
+            return
+        }
+        
         let tempPath = "/tmp/focuspanic_hosts_\(UUID().uuidString).txt"
         try newContent.write(toFile: tempPath, atomically: true, encoding: .utf8)
         
-        if isHelperInstalled {
+        if isHelperInstalled && !GuardService.shared.isActive {
             let success = runHelper(args: ["apply", tempPath])
             if success { return }
         }
@@ -530,20 +502,29 @@ public final class HostBlockerService {
     
     // MARK: - Internals
     
-    private func runHelper(args: [String]) -> Bool {
+    private func runHelper(args: [String], input: String? = nil) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = [helperPath] + args
+        process.arguments = ["-n", helperPath] + args
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        let inPipe = Pipe()
+        process.standardInput = inPipe
         do {
             try process.run()
+            if let input { inPipe.fileHandleForWriting.write(Data(input.utf8)) }
+            try? inPipe.fileHandleForWriting.close()
+            _ = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             return process.terminationStatus == 0
         } catch {
             return false
         }
+    }
+    
+    private func sha256Hex(of text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     
     private func removeBlockSection(from content: String) -> String {

@@ -426,11 +426,25 @@ public struct OnboardingWizardView: View {
                                 errorMessage: pinError,
                                 onComplete: { pin in
                                     if pin == initialPin {
+                                        // Si quedó un PIN de una instalación anterior en el guardián, solo
+                                        // se puede cambiar conociéndolo (Ajustes > Seguridad).
+                                        let result = engine.updateCompanionSecrets(currentSecret: "", newPin: initialPin)
+                                        if result == .denied {
+                                            withAnimation {
+                                                pinConfirmed = true
+                                                pinError = "Ya hay un PIN del compañero guardado de una instalación anterior. Se seguirá usando ese PIN."
+                                            }
+                                            return
+                                        }
+                                        guard result == .ok else {
+                                            NSSound(named: "Basso")?.play()
+                                            pinError = GuardService.message(for: result)
+                                            confirmPin = ""
+                                            return
+                                        }
                                         NSSound(named: "Hero")?.play()
                                         withAnimation {
                                             pinConfirmed = true
-                                            engine.settings.masterCompanionPassword = initialPin
-                                            engine.saveSettings()
                                             pinError = nil
                                         }
                                     } else {

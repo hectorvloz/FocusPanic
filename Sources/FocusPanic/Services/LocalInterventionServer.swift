@@ -123,7 +123,7 @@ public final class LocalInterventionServer {
                 return
             }
             
-            // Endpoint para iniciar sesión de enfoque remotamente (desde InnotchBar)
+            // Endpoint para iniciar sesión de enfoque remotamente
             if requestStr.contains("/api/start-session") {
                 var minutes = 25
                 var preset = "Pomodoro TDAH"
@@ -143,6 +143,16 @@ public final class LocalInterventionServer {
                     }
                 }
                 DispatchQueue.main.async {
+                    // Cualquier proceso local puede llamar a esta API: no se permite reemplazar una sesión
+                    // activa (p. ej. por una de 0 minutos para terminarla antes de tiempo).
+                    guard FocusEngine.shared.sessionStatus != .active, minutes >= 1 else {
+                        let reason = minutes < 1 ? "La duración debe ser de al menos 1 minuto." : "Ya hay una sesión activa."
+                        let json = "{\"success\":false,\"error\":\"\(reason)\"}"
+                        let resp = "HTTP/1.1 409 Conflict\r\nContent-Type: application/json; charset=UTF-8\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n\(json)"
+                        _ = resp.withCString { ptr in write(clientSocket, ptr, strlen(ptr)) }
+                        close(clientSocket)
+                        return
+                    }
                     FocusEngine.shared.startFocusSession(durationMinutes: minutes, presetName: preset)
                     DistributedNotificationCenter.default().postNotificationName(
                         NSNotification.Name("com.focuspanic.sessionUpdated"),
@@ -158,10 +168,28 @@ public final class LocalInterventionServer {
                 return
             }
 
-            // Endpoint para detener sesión de enfoque
+            // Endpoint para detener sesión de enfoque: exige el PIN del compañero en ?code=
             if requestStr.contains("/api/end-session") {
+                var code = ""
+                if let urlLine = requestStr.components(separatedBy: "\r\n").first,
+                   let queryStart = urlLine.range(of: "?") {
+                    let queryPart = String(urlLine[queryStart.upperBound...]).components(separatedBy: " ").first ?? ""
+                    for pair in queryPart.components(separatedBy: "&") {
+                        let kv = pair.components(separatedBy: "=")
+                        if kv.count == 2 && kv[0] == "code" { code = kv[1].removingPercentEncoding ?? kv[1] }
+                    }
+                }
                 DispatchQueue.main.async {
-                    FocusEngine.shared.endSession(didCompleteNormally: false)
+                    let engine = FocusEngine.shared
+                    let check = engine.isCompanionPinEnforced ? engine.checkCompanionSecret(code) : .ok
+                    guard check == .ok else {
+                        let json = "{\"success\":false,\"error\":\"\(GuardService.message(for: check))\"}"
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=UTF-8\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n\(json)"
+                        _ = resp.withCString { ptr in write(clientSocket, ptr, strlen(ptr)) }
+                        close(clientSocket)
+                        return
+                    }
+                    engine.endSession(didCompleteNormally: false)
                     DistributedNotificationCenter.default().postNotificationName(
                         NSNotification.Name("com.focuspanic.sessionUpdated"),
                         object: nil,
@@ -210,7 +238,7 @@ public final class LocalInterventionServer {
                     let email = FocusEngine.shared.settings.officialPartnerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
                     let hasEmail = !email.isEmpty
                     let maskedEmail = self.maskEmail(email)
-                    let hasMaster = !FocusEngine.shared.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let hasMaster = FocusEngine.shared.hasCompanionPin
                     
                     let json = """
                     {"hasPartnerEmail":\(hasEmail),"maskedEmail":"\(maskedEmail)","hasMasterPassword":\(hasMaster)}

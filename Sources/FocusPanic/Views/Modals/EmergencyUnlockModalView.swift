@@ -156,7 +156,7 @@ public struct EmergencyUnlockModalView: View {
             
             PasscodeKeypadView(
                 pin: $engine.enteredMasterPassword,
-                maxDigits: max(4, engine.settings.masterCompanionPassword.count),
+                maxDigits: engine.companionPinDigits,
                 title: "",
                 subtitle: "",
                 tintColor: .orange,
@@ -191,9 +191,8 @@ public struct EmergencyUnlockModalView: View {
     }
     
     private func verifyAndUnlock() {
-        let clean = engine.enteredMasterPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let master = engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !master.isEmpty && clean == master {
+        let result = engine.checkCompanionSecret(engine.enteredMasterPassword)
+        if result == .ok && engine.hasCompanionPin {
             isSuccess = true
             NSSound(named: "Hero")?.play()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -201,7 +200,7 @@ public struct EmergencyUnlockModalView: View {
             }
         } else {
             NSSound(named: "Basso")?.play()
-            engine.emergencyErrorMessage = "Clave incorrecta. Pídesela a tu compañero."
+            engine.emergencyErrorMessage = GuardService.message(for: result == .ok ? .denied : result)
         }
     }
     

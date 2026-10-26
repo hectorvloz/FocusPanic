@@ -131,61 +131,8 @@ codesign --force --deep --sign - --identifier "com.focuspanic.mac" --requirement
 # Quitar bandera de cuarentena si aplica
 xattr -dr com.apple.quarantine "$APP_BUNDLE" 2>/dev/null || true
 
-# Actualizar focuspanic-helper con Cloudflare Families DNS (1.1.1.3) si ya existe
-if [ -f "/usr/local/bin/focuspanic-helper" ]; then
-    cat << 'EOF_HELPER' > /tmp/focuspanic-helper
-#!/bin/bash
-ACTION="$1"
-HOSTS="/etc/hosts"
-case "$ACTION" in
-    apply)
-        if [ -f "$2" ]; then
-            cp -f "$2" "$HOSTS"
-            chmod 644 "$HOSTS"
-            networksetup -listallnetworkservices 2>/dev/null | grep -v '^\*' | grep -v 'An asterisk' | while IFS= read -r iface; do
-                [ -n "$iface" ] && networksetup -setdnsservers "$iface" 1.1.1.3 1.0.0.3 2606:4700:4700::1113 2606:4700:4700::1003 2>/dev/null || true
-            done
-            killall -HUP mDNSResponder 2>/dev/null || true
-            dscacheutil -flushcache 2>/dev/null || true
-            rm -f "$2"
-            echo "OK"
-        else
-            echo "ERROR" && exit 1
-        fi
-        ;;
-    remove)
-        if grep -q "BEGIN FOCUSPANIC" "$HOSTS"; then
-            sed -i '' '/# >>> BEGIN FOCUSPANIC BLOCK/,/# <<< END FOCUSPANIC BLOCK/d' "$HOSTS"
-            chmod 644 "$HOSTS"
-        fi
-        networksetup -listallnetworkservices 2>/dev/null | grep -v '^\*' | grep -v 'An asterisk' | while IFS= read -r iface; do
-            [ -n "$iface" ] && networksetup -setdnsservers "$iface" "Empty" 2>/dev/null || true
-        done
-        killall -HUP mDNSResponder 2>/dev/null || true
-        dscacheutil -flushcache 2>/dev/null || true
-        echo "OK"
-        ;;
-    apply-family-dns)
-        networksetup -listallnetworkservices 2>/dev/null | grep -v '^\*' | grep -v 'An asterisk' | while IFS= read -r iface; do
-            [ -n "$iface" ] && networksetup -setdnsservers "$iface" 1.1.1.3 1.0.0.3 2606:4700:4700::1113 2606:4700:4700::1003 2>/dev/null || true
-        done
-        killall -HUP mDNSResponder 2>/dev/null || true
-        dscacheutil -flushcache 2>/dev/null || true
-        echo "OK"
-        ;;
-    flush)
-        killall -HUP mDNSResponder 2>/dev/null || true
-        dscacheutil -flushcache 2>/dev/null || true
-        echo "OK"
-        ;;
-    *)
-        echo "Usage: focuspanic-helper {apply|remove|flush|apply-family-dns} [file]"; exit 1;;
-esac
-EOF_HELPER
-    cp -f /tmp/focuspanic-helper /usr/local/bin/focuspanic-helper 2>/dev/null || true
-    chmod 755 /usr/local/bin/focuspanic-helper 2>/dev/null || true
-    rm -f /tmp/focuspanic-helper
-fi
+# El helper privilegiado (v2, con el guardián) lo instala y actualiza la propia app al abrirse,
+# porque necesita la contraseña de administrador.
 
 # Actualizar el cache de iconos y notificaciones de macOS
 killall usernoted 2>/dev/null || true

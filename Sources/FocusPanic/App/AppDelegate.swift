@@ -30,6 +30,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Sincronizar inicio automático con macOS
         LaunchAtLoginService.shared.updateLaunchAtLogin(enabled: FocusEngine.shared.settings.launchAtLogin)
         
+        setupGuardian()
+        
         // Abrir la ventana principal al iniciar
         DispatchQueue.main.async { [weak self] in
             self?.openMainWindow()
@@ -140,6 +142,58 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isAuthorizedToTerminate = false
     private var isSystemPoweringOff = false
     
+    /// Permite cerrar la app sin volver a pedir el PIN (p. ej. tras desinstalar con PIN).
+    public func authorizeTermination() {
+        isAuthorizedToTerminate = true
+    }
+    
+    // MARK: - Guardián (helper v2 + LaunchDaemon que relanza la app)
+    
+    private let lastBackedUpVersionKey = "FocusPanic_GuardBackupVersion"
+    
+    private func setupGuardian() {
+        let guardService = GuardService.shared
+        let engine = FocusEngine.shared
+        
+        // Instalaciones con el helper antiguo: ofrecer la actualización (pide la contraseña de admin una vez)
+        if HostBlockerService.shared.isHelperInstalled && !guardService.isActive {
+            let alert = NSAlert()
+            alert.messageText = "Actualizar la protección de FocusPanic"
+            alert.informativeText = "La nueva protección guarda el PIN de tu compañero fuera del alcance de otros programas (incluidos agentes de IA) y vuelve a abrir FocusPanic si alguien lo cierra o lo mata sin el PIN. macOS te pedirá tu contraseña de administrador una sola vez."
+            alert.addButton(withTitle: "Actualizar Ahora")
+            alert.addButton(withTitle: "Más Tarde")
+            if alert.runModal() == .alertFirstButtonReturn {
+                do {
+                    try HostBlockerService.shared.installHelper()
+                } catch {
+                    let errorAlert = NSAlert()
+                    errorAlert.messageText = "No se pudo actualizar la protección"
+                    errorAlert.informativeText = error.localizedDescription
+                    errorAlert.runModal()
+                }
+            }
+        }
+        
+        guard guardService.isActive else { return }
+        // Si se reabrió antes de que acabe una pausa autorizada, el resto de la pausa ya no aplica
+        guardService.resumeGuardian()
+        engine.migrateCompanionSecretsToGuardIfNeeded()
+        
+        // Mantener al día la copia de respaldo que el guardián restaura si borran la app
+        let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        if UserDefaults.standard.string(forKey: lastBackedUpVersionKey) != currentVersion {
+            guardService.syncAppBackup()
+            UserDefaults.standard.set(currentVersion, forKey: lastBackedUpVersionKey)
+        }
+        
+        if let detail = guardService.unreportedTamperEvent() {
+            let partner = engine.settings.officialPartnerEmail
+            if engine.settings.isPartnerAlertUninstallEnabled && !partner.isEmpty {
+                EmailService.shared.sendTamperAlert(toEmail: partner, actionDetail: detail)
+            }
+        }
+    }
+    
     public func authorizeAndRelaunch() {
         isAuthorizedToTerminate = true
         let bundlePath = Bundle.main.bundlePath
@@ -168,7 +222,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let engine = FocusEngine.shared
         
         // 3. Si la clave del compañero está activa, solicitar el PIN directamente para autorizar el cierre manual (Cmd+Q o Quit)
-        if engine.settings.isMasterPasswordEnabled && !engine.settings.masterCompanionPassword.isEmpty {
+        if engine.isCompanionPinEnforced {
             promptCompanionPasswordForExit()
             return .terminateCancel
         }
@@ -183,6 +237,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             let response = alert.runModal()
             if response == .alertFirstButtonReturn {
                 engine.endSession(didCompleteNormally: false)
+                _ = GuardService.shared.pauseGuardian(pin: "")
                 cleanupBeforeExit()
                 return .terminateNow
             } else {
@@ -190,6 +245,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
+        // Sin PIN configurado el guardián acepta la pausa sin clave; con PIN esto no llega a ejecutarse
+        _ = GuardService.shared.pauseGuardian(pin: "")
         cleanupBeforeExit()
         return .terminateNow
     }
@@ -197,7 +254,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func promptCompanionPasswordForExit() {
         let alert = NSAlert()
         alert.messageText = "FocusPanic Protegido"
-        alert.informativeText = "No está permitido cerrar FocusPanic para evitar burlar los bloqueos. Tu compañero debe ingresar su PIN de 4 dígitos para autorizar el cierre:"
+        alert.informativeText = GuardService.shared.isActive
+            ? "No está permitido cerrar FocusPanic para evitar burlar los bloqueos. Tu compañero debe ingresar su PIN para autorizar el cierre. FocusPanic se volverá a abrir solo en \(GuardService.exitPauseMinutes) minutos."
+            : "No está permitido cerrar FocusPanic para evitar burlar los bloqueos. Tu compañero debe ingresar su PIN de 4 dígitos para autorizar el cierre:"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Autorizar y Cerrar App")
         alert.addButton(withTitle: "Cancelar")
@@ -211,9 +270,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         
         if response == .alertFirstButtonReturn {
             let entered = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let master = FocusEngine.shared.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            var result = FocusEngine.shared.checkCompanionSecret(entered)
+            if result == .ok && GuardService.shared.isActive {
+                // Sin esta pausa el guardián volvería a abrir la app a los pocos segundos
+                result = GuardService.shared.pauseGuardian(pin: entered)
+            }
             
-            if (entered == master && !master.isEmpty) || master.isEmpty {
+            if result == .ok {
                 SoundService.shared.play("Hero")
                 isAuthorizedToTerminate = true
                 cleanupBeforeExit()
@@ -233,7 +296,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 
                 let errorAlert = NSAlert()
                 errorAlert.messageText = "Clave Incorrecta"
-                errorAlert.informativeText = "El PIN ingresado no es correcto. FocusPanic continuará ejecutándose para proteger tu enfoque."
+                errorAlert.informativeText = "\(GuardService.message(for: result)) FocusPanic continuará ejecutándose para proteger tu enfoque."
                 errorAlert.alertStyle = .critical
                 errorAlert.addButton(withTitle: "Entendido")
                 errorAlert.runModal()

@@ -17,6 +17,10 @@ public struct EmergencyUnlockSettingsView: View {
     @State private var changePasswordError: String? = nil
     @State private var changePasswordSuccess = false
     
+    // Respuesta de seguridad: con el guardián solo se guarda como hash, nunca en AppSettings
+    @State private var newSecurityAnswer = ""
+    @State private var securityAnswerMessage: String? = nil
+    
     // Estados para la prueba de envío de correos
     @State private var testRecipientEmail = ""
     @State private var isSendingTestEmail = false
@@ -29,7 +33,7 @@ public struct EmergencyUnlockSettingsView: View {
     @State private var weeklyReportErrorMessage: String? = nil
     
     public var body: some View {
-        if isUnlocked || !engine.settings.isMasterPasswordEnabled {
+        if isUnlocked || !engine.isCompanionPinEnforced {
             unlockedContent
         } else {
             lockedAccessView
@@ -66,7 +70,7 @@ public struct EmergencyUnlockSettingsView: View {
             
             PasscodeKeypadView(
                 pin: $enteredPassword,
-                maxDigits: max(4, engine.settings.masterCompanionPassword.count),
+                maxDigits: engine.companionPinDigits,
                 title: "",
                 subtitle: "Ingresa el PIN de tu compañero:",
                 tintColor: .orange,
@@ -97,11 +101,9 @@ public struct EmergencyUnlockSettingsView: View {
     }
     
     private func verifyPassword() {
-        let clean = enteredPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let master = engine.settings.masterCompanionPassword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isMatch = (!master.isEmpty && clean == master) || master.isEmpty
+        let result = engine.checkCompanionSecret(enteredPassword)
         
-        if isMatch {
+        if result == .ok {
             withAnimation(.spring()) {
                 isSuccess = true
                 errorMessage = nil
@@ -116,7 +118,7 @@ public struct EmergencyUnlockSettingsView: View {
             }
         } else {
             NSSound(named: "Basso")?.play()
-            errorMessage = "Clave incorrecta. Pídesela a tu compañero."
+            errorMessage = GuardService.message(for: result)
         }
     }
     
@@ -142,7 +144,7 @@ public struct EmergencyUnlockSettingsView: View {
                     
                     Spacer()
                     
-                    if engine.settings.isMasterPasswordEnabled {
+                    if engine.isCompanionPinEnforced {
                         Button(action: {
                             withAnimation {
                                 isUnlocked = false
@@ -173,6 +175,8 @@ public struct EmergencyUnlockSettingsView: View {
                         Spacer()
                         Toggle("", isOn: $engine.settings.isMasterPasswordEnabled)
                             .toggleStyle(.switch)
+                            // Con el guardián el PIN siempre está activo; se quita desinstalando con PIN
+                            .disabled(GuardService.shared.holdsPin)
                             .onChange(of: engine.settings.isMasterPasswordEnabled) { _ in engine.saveSettings() }
                     }
                     
@@ -180,7 +184,7 @@ public struct EmergencyUnlockSettingsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    if engine.settings.isMasterPasswordEnabled {
+                    if engine.isCompanionPinEnforced || engine.settings.isMasterPasswordEnabled {
                         VStack(spacing: 14) {
                             // Tarjeta de estado actual de la clave
                             HStack(spacing: 12) {
@@ -197,7 +201,7 @@ public struct EmergencyUnlockSettingsView: View {
                                     Text("PIN de Rescate Activo")
                                         .font(.subheadline)
                                         .fontWeight(.semibold)
-                                    Text("Protegido con \(max(4, engine.settings.masterCompanionPassword.count)) dígitos • Solo tu compañero debe saberlo")
+                                    Text("Protegido con \(engine.companionPinDigits) dígitos • Solo tu compañero debe saberlo")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -386,8 +390,22 @@ public struct EmergencyUnlockSettingsView: View {
                             }
                             .pickerStyle(.menu)
                             
-                            SecureField("Respuesta Secreta del Compañero", text: $engine.settings.securityAnswer)
-                                .textFieldStyle(.roundedBorder)
+                            if GuardService.shared.isActive {
+                                HStack(spacing: 8) {
+                                    SecureField(GuardService.shared.status.hasAnswer ? "Nueva respuesta (ya hay una guardada)" : "Respuesta Secreta del Compañero", text: $newSecurityAnswer)
+                                        .textFieldStyle(.roundedBorder)
+                                    Button("Guardar") { saveSecurityAnswer() }
+                                        .disabled(newSecurityAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                                if let securityAnswerMessage {
+                                    Text(securityAnswerMessage)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            } else {
+                                SecureField("Respuesta Secreta del Compañero", text: $engine.settings.securityAnswer)
+                                    .textFieldStyle(.roundedBorder)
+                            }
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
@@ -877,6 +895,18 @@ public struct EmergencyUnlockSettingsView: View {
         }
     }
     
+    private func saveSecurityAnswer() {
+        let result = engine.updateCompanionSecrets(currentSecret: engine.lastVerifiedCompanionSecret, newAnswer: newSecurityAnswer)
+        if result == .ok {
+            newSecurityAnswer = ""
+            securityAnswerMessage = "Respuesta guardada de forma segura."
+            NSSound(named: "Hero")?.play()
+        } else {
+            securityAnswerMessage = GuardService.message(for: result)
+            NSSound(named: "Basso")?.play()
+        }
+    }
+    
     private func saveNewMasterPassword() {
         let cleanNew = newPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanConfirm = confirmPassword.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -893,9 +923,12 @@ public struct EmergencyUnlockSettingsView: View {
             return
         }
         
-        engine.settings.masterCompanionPassword = cleanNew
-        engine.settings.isMasterPasswordEnabled = true
-        engine.saveSettings()
+        let result = engine.updateCompanionSecrets(currentSecret: engine.lastVerifiedCompanionSecret, newPin: cleanNew)
+        guard result == .ok else {
+            changePasswordError = GuardService.message(for: result)
+            NSSound(named: "Basso")?.play()
+            return
+        }
         
         changePasswordError = nil
         changePasswordSuccess = true
