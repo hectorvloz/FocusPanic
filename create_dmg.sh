@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="FocusPanic"
-VERSION="1.0"
+VERSION="1.2.0"
 VOL_NAME="FocusPanic"
 DMG_FINAL="${APP_NAME}-Instalador.dmg"
 DMG_TEMP="temp_rw.dmg"
@@ -66,7 +66,7 @@ cat <<EOF > "$STAGE_DIR/$APP_NAME.app/Contents/Info.plist"
     <key>CFBundleShortVersionString</key>
     <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>3</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
